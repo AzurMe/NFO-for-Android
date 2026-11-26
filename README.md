@@ -2,7 +2,7 @@
 
 NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选择本地电影目录后，应用用 TMDB 匹配影片，把 NFO 和图片写到对应视频旁边，也可以查找并下载中文字幕。应用默认使用简体中文，支持 Android 8.0（API 26）及以上版本。
 
-[下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest)
+[下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest) · [版本更新记录](#版本更新记录)
 
 ## 安装和刮削
 
@@ -67,6 +67,40 @@ Movies/
 Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。需要把这些状态写回电影目录时，在 Kodi 中将视频资料库设为 **导出到单独文件**，并按需选择覆盖旧文件。刮削器更新时可保留已写入 NFO 的字段。[Kodi 视频资料库导入与导出](https://kodi.wiki/view/Import-export_library/Video)
 
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
+
+## 版本更新记录
+
+### [v1.3.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.3.1)
+
+- 在 README 补齐首版 APK 至今的更新记录，并为各 GitHub 发行版添加下载入口。
+
+### [v1.3.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.3.0)
+
+- 新增中文字幕下载，可随刮削运行，也可单独给已有影片补字幕。
+- 优先用射手影音按视频指纹匹配，可选填伪射手或 SubDL 凭据扩展搜索。
+- 支持 SRT、ASS、SSA 和 VTT。字幕写入 `Subs`，按 `电影名.CHN.后缀` 命名，同名时加编号，重复内容会跳过。
+
+### [v1.2.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.2.0)
+
+- 更新 NFO 时保留观看记录、续播点、个人评分、排序标题、标签和自定义字段，并同步已有的 `movie.nfo` 和分段影片的首段 NFO。
+- 由 Kodi 读取影片的音视频轨道和媒体信息。优先采用本地预告片，并改进 TMDB 在线预告片的语言回退。
+- 增加可选的备用背景图和 Kodi 合集图片下载，修复 Android 9 的存储重命名兼容问题。
+
+### [v1.1.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.1.1)
+
+- 更新桌面和应用内图标，以场记板和折角 NFO 文件为主要图形。
+- 支持 Android 自适应图标和 Android 13 起的主题图标。
+
+### [v1.1.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.1.0)
+
+- 首次在 GitHub 发布签名 APK，支持 Android 8.0 及以上版本。
+- 支持从 `Movies` 选择电影目录，按每部电影的文件夹名和年份匹配，并可手动选片。
+- 输出 Kodi 电影 NFO、海报、背景图、可用的额外图片和演员头像。可分别检测 TMDB API、图片服务器和凭据。
+- 补充安装、Kodi 导入和源码编译说明。
+
+### v1.0.0（初始 APK）
+
+- 实现 Android 电影刮削，可选择本地目录，通过 TMDB 获取资料，保存 Kodi NFO、海报、背景图和演员资料。
 
 ## 从源码构建
 
