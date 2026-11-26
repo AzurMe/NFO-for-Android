@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
-import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -26,6 +25,8 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -55,17 +56,18 @@ public final class MainActivity extends Activity {
             | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     private static final Uri MOVIES_LOCATION = DocumentsContract.buildDocumentUri(
             "com.android.externalstorage.documents", "primary:Movies");
-    private static final int INK = 0xff142a21;
-    private static final int MUTED = 0xff4e675a;
-    private static final int GREEN = 0xff194b39;
-    private static final int DARK = 0xff10392c;
-    private static final int LIME = 0xffe1f28c;
-    private static final int PAPER = 0xfff4f4eb;
-    private static final int CARD = 0xfffffff9;
-    private static final int EDGE = 0xffdce5d8;
-    private static final int PALE = 0xffedf3e5;
-    private static final int WHITE = Color.WHITE;
-    private static final int RED = 0xff9b372c;
+    static final int INK = 0xff142a21;
+    static final int MUTED = 0xff4e675a;
+    static final int GREEN = 0xff194b39;
+    static final int DARK = 0xff10392c;
+    static final int LIME = 0xffe1f28c;
+    static final int PAPER = 0xfff4f4eb;
+    static final int CARD = 0xfffffff9;
+    static final int EDGE = 0xffdce5d8;
+    static final int PALE = 0xffedf3e5;
+    static final int WHITE = Color.WHITE;
+    static final int RED = 0xff9b372c;
+    private static final String STATE_MOVIE_PUSH = "movie_push_visible";
     private static final String[] LANGUAGES = {"zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES"};
     private static final String[] LANGUAGE_NAMES = {"简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español"};
     private static final int LOG_LIMIT = 50;
@@ -82,6 +84,18 @@ public final class MainActivity extends Activity {
     private SharedPreferences settings;
     private List<MovieStorage.Movie> movies = Collections.emptyList();
     private FrameLayout frame;
+    private FrameLayout pageHost;
+    private LinearLayout scraperPage;
+    private FrameLayout navigationOverlay;
+    private ScrollView navigationPanel;
+    private Button scraperNavigation;
+    private Button moviePushNavigation;
+    private View navigationReturnFocus;
+    private Runnable pendingScraperDialog;
+    private OnBackInvokedCallback navigationBackCallback;
+    private MoviePushScreen moviePush;
+    private View moviePushPage;
+    private boolean showingMoviePush;
     private ScrollView scroll;
     private TextView folderName;
     private TextView collectionFolderName;
@@ -129,6 +143,9 @@ public final class MainActivity extends Activity {
         }
         configureWindow();
         buildScreen();
+        if (state != null && state.getBoolean(STATE_MOVIE_PUSH)) {
+            showPage(true);
+        }
     }
 
     private void configureWindow() {
@@ -146,13 +163,16 @@ public final class MainActivity extends Activity {
         frame = new FrameLayout(this);
         frame.setBackgroundColor(PAPER);
         frame.setFocusableInTouchMode(true);
-        LinearLayout stack = vertical();
-        frame.addView(stack, viewport());
+        pageHost = new FrameLayout(this);
+        frame.addView(pageHost, new FrameLayout.LayoutParams(-1, -1));
+        scraperPage = vertical();
+        pageHost.addView(scraperPage, viewport());
+        addToolbar(scraperPage);
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
         scroll.setVerticalScrollBarEnabled(false);
-        stack.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        scraperPage.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         frame.setOnApplyWindowInsetsListener((view, insets) -> {
             if (Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
@@ -172,7 +192,10 @@ public final class MainActivity extends Activity {
         addSubtitles(column);
         addOptions(column);
         addLog(column);
-        addControls(stack);
+        addControls(scraperPage);
+        buildNavigation();
+        pageHost.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop,
+                oldRight, oldBottom) -> resizeContent(right - left));
         setContentView(frame);
         frame.requestFocus();
         updateFolderLabel();
@@ -181,37 +204,243 @@ public final class MainActivity extends Activity {
     }
 
     private FrameLayout.LayoutParams viewport() {
-        int screenWidth = getResources().getDisplayMetrics().widthPixels;
-        return new FrameLayout.LayoutParams(Math.min(screenWidth, dp(660)), -1, Gravity.CENTER_HORIZONTAL);
+        int available = pageHost.getWidth();
+        int width = available == 0 ? -1 : Math.min(available, dp(660));
+        return new FrameLayout.LayoutParams(width, -1, Gravity.CENTER_HORIZONTAL);
+    }
+
+    private void resizeContent(int width) {
+        if (width <= 0) {
+            return;
+        }
+        int pageWidth = Math.min(width, dp(660));
+        resizeWidth(scraperPage, pageWidth);
+        resizeWidth(moviePushPage, pageWidth);
+        resizeWidth(navigationPanel, Math.min(dp(318), Math.max(width - dp(52), width / 2)));
+    }
+
+    private static void resizeWidth(View view, int width) {
+        if (view != null && view.getLayoutParams().width != width) {
+            android.view.ViewGroup.LayoutParams layout = view.getLayoutParams();
+            layout.width = width;
+            view.setLayoutParams(layout);
+        }
+    }
+
+    private void buildNavigation() {
+        navigationOverlay = new FrameLayout(this);
+        navigationOverlay.setVisibility(View.GONE);
+        View scrim = new View(this);
+        scrim.setBackgroundColor(0x7811261d);
+        scrim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        scrim.setOnClickListener(view -> closeNavigation(true));
+        navigationOverlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
+
+        navigationPanel = new ScrollView(this);
+        navigationPanel.setFillViewport(true);
+        navigationPanel.setBackgroundColor(CARD);
+        navigationPanel.setElevation(dp(14));
+        navigationPanel.setClickable(true);
+        if (Build.VERSION.SDK_INT >= 28) {
+            navigationPanel.setAccessibilityPaneTitle("导航菜单");
+        }
+        navigationOverlay.addView(navigationPanel, new FrameLayout.LayoutParams(dp(318), -1, Gravity.LEFT));
+        LinearLayout content = vertical();
+        content.setPadding(dp(16), dp(18), dp(16), dp(18));
+        navigationPanel.addView(content, new ScrollView.LayoutParams(-1, -2));
+
+        LinearLayout heading = horizontal();
+        heading.setBackground(shape(DARK, 16, 0));
+        heading.setPadding(dp(14), dp(8), dp(8), dp(8));
+        TextView name = text("NFO for Android", 17, WHITE, true);
+        heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
+        Button dismiss = button("×", 0xff24533f, WHITE);
+        dismiss.setTextSize(22);
+        dismiss.setContentDescription("关闭导航菜单");
+        dismiss.setOnClickListener(view -> closeNavigation(true));
+        heading.addView(dismiss, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        add(content, heading, 0);
+
+        scraperNavigation = navigationItem(content, "电影刮削器", 14, false);
+        moviePushNavigation = navigationItem(content, "电影推送", 6, true);
+        frame.addView(navigationOverlay, new FrameLayout.LayoutParams(-1, -1));
+    }
+
+    private Button navigationItem(LinearLayout parent, String label, int top, boolean moviePush) {
+        Button item = button(label, CARD, INK);
+        item.setFocusableInTouchMode(true);
+        item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        item.setPadding(dp(15), 0, dp(15), 0);
+        item.setTextSize(16);
+        item.setOnClickListener(view -> showPage(moviePush));
+        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-1, dp(54));
+        placement.topMargin = dp(top);
+        parent.addView(item, placement);
+        return item;
+    }
+
+    private void openNavigation() {
+        if (navigationOverlay.getVisibility() == View.VISIBLE) {
+            return;
+        }
+        navigationReturnFocus = getCurrentFocus();
+        InputMethodManager keyboard = getSystemService(InputMethodManager.class);
+        if (keyboard != null) {
+            keyboard.hideSoftInputFromWindow(frame.getWindowToken(), 0);
+        }
+        updateNavigationItem(scraperNavigation, !showingMoviePush);
+        updateNavigationItem(moviePushNavigation, showingMoviePush);
+        pageHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        navigationOverlay.setVisibility(View.VISIBLE);
+        (showingMoviePush ? moviePushNavigation : scraperNavigation).requestFocus();
+        updateNavigationBack();
+    }
+
+    private void updateNavigationItem(Button item, boolean selected) {
+        item.setSelected(selected);
+        item.setTextColor(selected ? GREEN : INK);
+        item.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
+                shape(selected ? PALE : CARD, 12, 0), null));
+    }
+
+    private void closeNavigation(boolean restoreFocus) {
+        if (navigationOverlay.getVisibility() == View.VISIBLE) {
+            navigationOverlay.setVisibility(View.GONE);
+            pageHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+            if (restoreFocus && navigationReturnFocus != null && navigationReturnFocus.isShown()) {
+                navigationReturnFocus.requestFocus();
+            }
+            navigationReturnFocus = null;
+        }
+        updateNavigationBack();
+        if (pendingScraperDialog != null && !showingMoviePush) {
+            frame.post(this::showPendingScraperDialog);
+        }
+    }
+
+    private void showPage(boolean showMoviePush) {
+        if (showingMoviePush == showMoviePush) {
+            closeNavigation(true);
+            return;
+        }
+        if (showMoviePush && moviePush == null) {
+            moviePush = new MoviePushScreen(this, this::openNavigation, this::moviePushClient,
+                    this::configureTmdbFromMoviePush);
+            moviePushPage = moviePush.view();
+            pageHost.addView(moviePushPage, viewport());
+        }
+        showingMoviePush = showMoviePush;
+        scraperPage.setVisibility(showMoviePush ? View.GONE : View.VISIBLE);
+        moviePushPage.setVisibility(showMoviePush ? View.VISIBLE : View.GONE);
+        closeNavigation(false);
+        frame.requestFocus();
+        if (showMoviePush) {
+            moviePush.onShown();
+        }
+    }
+
+    private TmdbClient moviePushClient() {
+        String value = credential == null ? savedCredential : credential.getText().toString().trim();
+        return value.isEmpty() ? null : new TmdbClient(value, language());
+    }
+
+    private void configureTmdbFromMoviePush() {
+        showPage(false);
+        focusTmdbCredential();
+    }
+
+    private void showScraperDialog(Runnable dialog) {
+        pendingScraperDialog = dialog;
+        showPendingScraperDialog();
+    }
+
+    private void showPendingScraperDialog() {
+        if (pendingScraperDialog != null && !showingMoviePush
+                && navigationOverlay.getVisibility() != View.VISIBLE && !isFinishing() && !isDestroyed()) {
+            Runnable dialog = pendingScraperDialog;
+            pendingScraperDialog = null;
+            dialog.run();
+        }
+    }
+
+    private boolean handleNavigationBack() {
+        if (navigationOverlay.getVisibility() == View.VISIBLE) {
+            closeNavigation(true);
+            return true;
+        }
+        if (showingMoviePush) {
+            showPage(false);
+            return true;
+        }
+        return false;
+    }
+
+    private void updateNavigationBack() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            boolean intercept = showingMoviePush || navigationOverlay.getVisibility() == View.VISIBLE;
+            if (intercept && navigationBackCallback == null) {
+                navigationBackCallback = this::handleNavigationBack;
+                getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                        OnBackInvokedDispatcher.PRIORITY_DEFAULT, navigationBackCallback);
+            } else if (!intercept && navigationBackCallback != null) {
+                removeNavigationBackCallback();
+            }
+        }
+    }
+
+    private void removeNavigationBackCallback() {
+        if (Build.VERSION.SDK_INT >= 33 && navigationBackCallback != null) {
+            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(navigationBackCallback);
+            navigationBackCallback = null;
+        }
     }
 
     @Override
-    public void onConfigurationChanged(Configuration configuration) {
-        super.onConfigurationChanged(configuration);
-        frame.getChildAt(0).setLayoutParams(viewport());
+    public void onBackPressed() {
+        if (!handleNavigationBack()) {
+            super.onBackPressed();
+        }
     }
 
-    private void addHeader(LinearLayout column) {
-        LinearLayout hero = vertical();
-        hero.setPadding(dp(20), dp(17), dp(17), dp(22));
-        hero.setBackground(shape(DARK, 24, 0));
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        super.onSaveInstanceState(state);
+        state.putBoolean(STATE_MOVIE_PUSH, showingMoviePush);
+    }
+
+    private void addToolbar(LinearLayout page) {
         LinearLayout top = horizontal();
+        top.setPadding(dp(18), dp(6), dp(18), dp(4));
+        Button menu = button("☰", PALE, GREEN);
+        menu.setTextSize(22);
+        menu.setContentDescription("打开导航菜单");
+        menu.setOnClickListener(view -> openNavigation());
+        top.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
         ImageView icon = new ImageView(this);
         icon.setImageResource(R.mipmap.ic_launcher);
-        top.addView(icon, new LinearLayout.LayoutParams(dp(37), dp(37)));
-        TextView wordmark = text("KODI · 电影资料库", 12, LIME, true);
+        icon.setContentDescription("NFO for Android");
+        LinearLayout.LayoutParams iconLayout = new LinearLayout.LayoutParams(dp(34), dp(34));
+        iconLayout.leftMargin = dp(10);
+        top.addView(icon, iconLayout);
+        TextView wordmark = text("KODI · 电影资料库", 12, GREEN, true);
         wordmark.setLetterSpacing(.08f);
         LinearLayout.LayoutParams mark = new LinearLayout.LayoutParams(0, -2, 1f);
         mark.leftMargin = dp(8);
         top.addView(wordmark, mark);
-        Button about = button("关于", 0xff24533f, WHITE);
+        Button about = button("关于", PALE, GREEN);
         about.setContentDescription("关于与 TMDB 署名");
-        top.addView(about, new LinearLayout.LayoutParams(dp(68), dp(42)));
+        top.addView(about, new LinearLayout.LayoutParams(dp(62), dp(48)));
         about.setOnClickListener(view -> showAbout());
-        hero.addView(top);
+        page.addView(top, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void addHeader(LinearLayout column) {
+        LinearLayout hero = vertical();
+        hero.setPadding(dp(20), dp(19), dp(17), dp(22));
+        hero.setBackground(shape(DARK, 24, 0));
         TextView title = text("电影刮削器", 36, WHITE, true);
         title.setLetterSpacing(-.03f);
-        add(hero, title, 12);
+        add(hero, title, 0);
         TextView subtitle = text("为 Kodi 下载电影资料、海报和中文字幕", 14, 0xffc5dbc9, false);
         add(hero, subtitle, 7);
         add(column, hero, 0);
@@ -777,7 +1006,7 @@ public final class MainActivity extends Activity {
                     runState.setText("没有发现可匹配的电影文件");
                 } else {
                     runState.setText("已发现 " + movies.size() + " 部影片");
-                    showMovieList();
+                    showScraperDialog(this::showMovieList);
                 }
             };
         });
@@ -881,18 +1110,18 @@ public final class MainActivity extends Activity {
                 directId = client.findMovieByImdb(lower);
             } else {
                 List<TmdbClient.Candidate> matches = client.search(query, year);
-                return () -> showCandidates(movie, query, year, matches);
+                return () -> showScraperDialog(() -> showCandidates(movie, query, year, matches));
             }
             if (directId <= 0) {
-                return () -> showCandidates(movie, query, year, Collections.emptyList());
+                return () -> showScraperDialog(() -> showCandidates(movie, query, year, Collections.emptyList()));
             }
             org.json.JSONObject details = client.details(directId);
             int id = directId;
             String title = details.optString("title");
             String date = details.optString("release_date");
             String original = details.optString("original_title");
-            return () -> confirmManual(movie, id, candidateLabel(title, original,
-                    date.length() >= 4 ? date.substring(0, 4) : "", id), details.optString("overview"));
+            return () -> showScraperDialog(() -> confirmManual(movie, id, candidateLabel(title, original,
+                    date.length() >= 4 ? date.substring(0, 4) : "", id), details.optString("overview")));
         });
     }
 
@@ -987,12 +1216,17 @@ public final class MainActivity extends Activity {
         String value = credential.getText().toString().trim();
         if (value.isEmpty()) {
             credential.setError("请输入 TMDB API Key 或 Read Access Token");
-            credential.requestFocus();
-            scroll.smoothScrollTo(0, Math.max(0, ((View) credential.getParent().getParent()).getTop() - dp(14)));
+            focusTmdbCredential();
             return null;
         }
         saveCredential();
         return new TmdbClient(value, language());
+    }
+
+    private void focusTmdbCredential() {
+        credential.requestFocus();
+        scroll.post(() -> scroll.smoothScrollTo(0,
+                Math.max(0, ((View) credential.getParent().getParent()).getTop() - dp(14))));
     }
 
     private String language() {
@@ -1122,6 +1356,10 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        removeNavigationBackCallback();
+        if (moviePush != null) {
+            moviePush.close();
+        }
         Thread running = worker;
         if (running != null) {
             running.interrupt();
@@ -1191,7 +1429,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.3.2", 19, INK, true), 0);
+        add(info, text("Kodi 电影刮削器 1.4.0", 19, INK, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, MUTED, false), 12);
@@ -1214,7 +1452,7 @@ public final class MainActivity extends Activity {
         return code == 401 || code == 403 || code == 429;
     }
 
-    private static String errorText(Exception problem) {
+    static String errorText(Exception problem) {
         if (problem instanceof TmdbClient.HttpException) {
             switch (((TmdbClient.HttpException) problem).statusCode) {
                 case 401: return "TMDB 凭据无效，请检查 API Key 或 Read Access Token。";
@@ -1291,20 +1529,20 @@ public final class MainActivity extends Activity {
         return content;
     }
 
-    private LinearLayout vertical() {
+    LinearLayout vertical() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         return layout;
     }
 
-    private LinearLayout horizontal() {
+    LinearLayout horizontal() {
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.HORIZONTAL);
         layout.setGravity(Gravity.CENTER_VERTICAL);
         return layout;
     }
 
-    private TextView text(String value, float size, int color, boolean bold) {
+    TextView text(String value, float size, int color, boolean bold) {
         TextView view = new TextView(this);
         view.setText(value);
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
@@ -1327,7 +1565,7 @@ public final class MainActivity extends Activity {
         return input;
     }
 
-    private Button button(String name, int fill, int foreground) {
+    Button button(String name, int fill, int foreground) {
         Button button = new Button(this);
         button.setText(name);
         button.setAllCaps(false);
@@ -1357,13 +1595,13 @@ public final class MainActivity extends Activity {
         return toggle;
     }
 
-    private void add(LinearLayout parent, View child, int top) {
+    void add(LinearLayout parent, View child, int top) {
         LinearLayout.LayoutParams margin = new LinearLayout.LayoutParams(-1, -2);
         margin.topMargin = dp(top);
         parent.addView(child, margin);
     }
 
-    private GradientDrawable shape(int color, int radius, int stroke) {
+    GradientDrawable shape(int color, int radius, int stroke) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color);
         drawable.setCornerRadius(dp(radius));
@@ -1373,7 +1611,7 @@ public final class MainActivity extends Activity {
         return drawable;
     }
 
-    private int dp(float value) {
+    int dp(float value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }

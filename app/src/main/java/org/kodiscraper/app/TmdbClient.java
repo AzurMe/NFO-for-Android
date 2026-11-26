@@ -19,6 +19,8 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -28,6 +30,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
@@ -44,8 +51,11 @@ public final class TmdbClient {
     private static final int MAX_RESULTS = 14;
     private static final int MAX_ALIAS_LOOKUPS = 4;
     private static final int MAX_SHORT_TITLE_PAGES = 3;
+    private static final int DISCOVER_PAGE_SIZE = 20;
+    private static final int RECENT_DETAIL_CONCURRENCY = 4;
     private static final Pattern IMAGE_PATH = Pattern.compile(
             "/[A-Za-z0-9_-]+\\.(jpe?g|png|webp|gif)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern IMDB_ID = Pattern.compile("tt[0-9]{5,12}");
     private static final Pattern YOUTUBE_ID = Pattern.compile("[a-zA-Z0-9_-]{11}");
     private static final Pattern BEARER_TOKEN = Pattern.compile("[A-Za-z0-9._~+/-]+=*");
     private static final String[] MOVIE_ART_GROUPS = {"posters", "backdrops", "logos"};
@@ -104,7 +114,7 @@ public final class TmdbClient {
 
     public int findMovieByImdb(String imdbId) throws IOException {
         String id = imdbId == null ? "" : imdbId.trim().toLowerCase(Locale.ROOT);
-        if (!id.matches("tt[0-9]{5,12}")) return 0;
+        if (!IMDB_ID.matcher(id).matches()) return 0;
         JSONObject response = json("/find/" + id, "external_source", "imdb_id",
                 "language", language);
         JSONArray movies = response.optJSONArray("movie_results");
@@ -176,6 +186,125 @@ public final class TmdbClient {
         }
         return candidates;
     }
+
+    public List<RecentMovie> recentMovies(LocalDate from, LocalDate through) throws IOException {
+        checkRunning();
+        if (from == null || through == null || from.isAfter(through)) {
+            throw new IOException("新片上映日期范围无效");
+        }
+        JSONArray popular = discoverRecent(from, through, false);
+        JSONArray scored = discoverRecent(from, through, true);
+        Map<Integer, JSONObject> seeds = new LinkedHashMap<>();
+        for (int i = 0; i < DISCOVER_PAGE_SIZE; i++) {
+            collectRecentSeed(seeds, popular, i, from, through);
+            collectRecentSeed(seeds, scored, i, from, through);
+        }
+        return resolveRecentMovies(new ArrayList<>(seeds.values()), from, through);
+    }
+
+    private JSONArray discoverRecent(LocalDate from, LocalDate through, boolean byScore) throws IOException {
+        return json("/discover/movie", "language", language,
+                "primary_release_date.gte", from.toString(), "primary_release_date.lte", through.toString(),
+                "include_adult", "false", "include_video", "false", "page", "1",
+                "sort_by", byScore ? "vote_average.desc" : "popularity.desc",
+                "vote_count.gte", byScore ? "10" : "0").optJSONArray("results");
+    }
+
+    private static void collectRecentSeed(Map<Integer, JSONObject> seeds, JSONArray entries, int index,
+                                          LocalDate from, LocalDate through) {
+        JSONObject movie = entries == null ? null : entries.optJSONObject(index);
+        if (movie == null || !isRecentMovie(movie) || releaseWithin(movie, from, through) == null) return;
+        int id = movie.optInt("id");
+        if (id > 0) seeds.putIfAbsent(id, movie);
+    }
+
+    private List<RecentMovie> resolveRecentMovies(List<JSONObject> seeds, LocalDate from,
+                                                  LocalDate through) throws IOException {
+        List<RecentMovie> result = new ArrayList<>();
+        if (seeds.isEmpty()) return result;
+        Set<String> imdbIds = new HashSet<>();
+        IOException firstFailure = null;
+        int concurrency = Math.min(RECENT_DETAIL_CONCURRENCY, seeds.size());
+        ExecutorService workers = Executors.newFixedThreadPool(concurrency);
+        try {
+            for (int start = 0; start < seeds.size(); start += concurrency) {
+                checkRunning();
+                List<Callable<RecentMovie>> batch = new ArrayList<>();
+                for (int i = start; i < Math.min(start + concurrency, seeds.size()); i++) {
+                    JSONObject seed = seeds.get(i);
+                    batch.add(() -> resolveRecentMovie(seed, from, through));
+                }
+                for (Future<RecentMovie> future : workers.invokeAll(batch)) {
+                    try {
+                        RecentMovie movie = future.get();
+                        if (movie != null && imdbIds.add(movie.imdbId())) result.add(movie);
+                    } catch (ExecutionException failure) {
+                        checkRunning();
+                        Throwable cause = failure.getCause();
+                        if (cause instanceof IOException) {
+                            IOException error = (IOException) cause;
+                            if (error instanceof HttpException) {
+                                int status = ((HttpException) error).statusCode;
+                                if (status == 404) continue;
+                                if (status == 401 || status == 403 || status == 429) throw error;
+                            }
+                            if (firstFailure == null) firstFailure = error;
+                        } else {
+                            throw new IOException("读取 TMDB 新片资料失败", cause);
+                        }
+                    }
+                }
+                if (firstFailure != null) break;
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            cancel();
+            throw new InterruptedIOException("已取消 TMDB 请求");
+        } finally {
+            workers.shutdownNow();
+        }
+        checkRunning();
+        if (result.isEmpty() && firstFailure != null) throw firstFailure;
+        return result;
+    }
+
+    private RecentMovie resolveRecentMovie(JSONObject seed, LocalDate from, LocalDate through) throws IOException {
+        int id = seed.optInt("id");
+        JSONObject details = json("/movie/" + id, "language", language);
+        if (details.optInt("id") != id || !isRecentMovie(details)) return null;
+        LocalDate date = releaseWithin(details, from, through);
+        String imdbId = string(details, "imdb_id").toLowerCase(Locale.ROOT);
+        if (date == null || !IMDB_ID.matcher(imdbId).matches()) return null;
+        String originalTitle = string(details, "original_title");
+        if (originalTitle.isEmpty()) originalTitle = string(seed, "original_title");
+        String title = string(details, "title");
+        if (title.isEmpty()) title = string(seed, "title");
+        if (title.isEmpty()) title = originalTitle;
+        if (title.isEmpty()) return null;
+        String poster = string(details, "poster_path");
+        if (!validImagePath(poster)) poster = string(seed, "poster_path");
+        return new RecentMovie(title, originalTitle, imdbId, date, validImagePath(poster) ? poster : "");
+    }
+
+    private static boolean isRecentMovie(JSONObject movie) {
+        String mediaType = string(movie, "media_type");
+        return !movie.optBoolean("adult") && !movie.optBoolean("video")
+                && (mediaType.isEmpty() || mediaType.equals("movie"));
+    }
+
+    private static LocalDate releaseWithin(JSONObject movie, LocalDate from, LocalDate through) {
+        String value = string(movie, "release_date");
+        if (value.length() != 10) return null;
+        try {
+            LocalDate date = LocalDate.parse(value);
+            return date.isBefore(from) || date.isAfter(through) ? null : date;
+        } catch (DateTimeParseException invalid) {
+            return null;
+        }
+    }
+
+    public record RecentMovie(String title, String originalTitle, String imdbId,
+                              LocalDate releaseDate, String posterPath) {}
 
     public JSONObject details(int tmdbId) throws IOException {
         if (tmdbId <= 0) throw new IOException("无效的 TMDB 电影编号");

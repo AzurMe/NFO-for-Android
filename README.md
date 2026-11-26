@@ -4,6 +4,15 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 [下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest) · [版本更新记录](#版本更新记录)
 
+## 电影推送
+
+1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。影片的上映日期来自 TMDB，使用应用里已有的 TMDB 凭据获取最近 30 天上映的影片候选。
+2. 应用按 IMDb ID 匹配官方评分数据。**热门**按 IMDb 投票数排序，**高分**显示评分至少 7.0 的影片并按分数排序。评分数据在设备上缓存 24 小时，供个人非商业使用。[IMDb 公开数据集](https://developer.imdb.com/non-commercial-datasets/) · [使用说明](https://help.imdb.com/article/imdb/general-information/can-i-use-imdb-data-in-my-software/G5JTRESSHJBBHTGX)
+3. 对感兴趣的电影点 **查找下载链接**。应用从海盗湾查询片名及年份，筛选发布标题明确带 `2160p` 和基础 `HDR10`、大小小于 40 GB（40,000,000,000 字节）的结果，并按做种人数排序。规格以发布者标注为准。[APiBay](https://apibay.org/)
+4. 选中一条候选后可以复制磁力链接，或在设备上已安装的应用中打开。
+
+Information courtesy of IMDb (https://www.imdb.com). Used with permission.
+
 ## 安装和刮削
 
 1. 从 Releases 的 **Assets** 下载最新的 `KodiMovieScraper-<版本>.apk`。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
@@ -71,6 +80,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.4.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.4.0)
+
+- 新增侧边栏和「电影推送」，可在刮削器与最近上映的电影列表之间切换。
+- 根据 TMDB 上映日期和 IMDb 官方评分、票数展示近 30 天影片，可切换热门和高分排序。
+- 按需查询海盗湾，筛选明确标注 2160p、HDR10 且小于 40 GB 的磁力链接，供选择、复制或打开。
 
 ### [v1.3.2](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.3.2)
 
