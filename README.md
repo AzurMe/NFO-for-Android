@@ -23,7 +23,7 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
 5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
 
-**刮削记录**在设备上保存最近 200 条，新的任务会继续追加。关闭应用后重新打开也能查看。
+**刮削记录**显示本次任务的进展，开始新任务时会清空这一栏。点旁边的 **历史日志** 可查看保存在设备上的最近 200 条记录，重启应用后仍可查看。
 
 ### 连接检测
 
@@ -84,6 +84,10 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.6.2](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.2)
+
+- 开始新任务时清空界面上的刮削记录，本地日志继续追加。点 **历史日志** 可查看最近 200 条。
 
 ### [v1.6.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.1)
 

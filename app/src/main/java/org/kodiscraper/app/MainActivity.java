@@ -171,7 +171,7 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        updateLog(history.newestFirst());
+        updateLog(history.currentTask());
     }
 
     AppAppearance appearance() {
@@ -735,7 +735,13 @@ public final class MainActivity extends Activity {
     private void addLog(LinearLayout column) {
         LinearLayout card = card(column);
         logPanel = card;
-        add(card, text("刮削记录", 17, appearance.foreground, true), 0);
+        LinearLayout header = horizontal();
+        header.addView(text("刮削记录", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1));
+        Button previous = button("历史日志", appearance.tint, appearance.accent);
+        previous.setMinHeight(dp(48));
+        previous.setOnClickListener(view -> showHistory());
+        header.addView(previous);
+        add(card, header, 0);
         runState = text("等待开始", 14, appearance.muted, true);
         runState.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(card, runState, 7);
@@ -752,6 +758,25 @@ public final class MainActivity extends Activity {
         log.setLineSpacing(dp(4), 1f);
         add(card, log, 7);
         log.setVisibility(View.GONE);
+    }
+
+    private void showHistory() {
+        List<String> entries = history.newestFirst();
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("历史日志")
+                .setPositiveButton("关闭", null);
+        if (entries.isEmpty()) {
+            dialog.setMessage("暂无日志");
+        } else {
+            ScrollView historyScroll = new ScrollView(this);
+            LinearLayout content = dialogContent();
+            TextView lines = text(String.join("\n", entries), 13, appearance.foreground, false);
+            lines.setLineSpacing(dp(4), 1f);
+            lines.setTextIsSelectable(true);
+            add(content, lines, 0);
+            historyScroll.addView(content, new ScrollView.LayoutParams(-1, -2));
+            dialog.setView(historyScroll);
+        }
+        dialog.show();
     }
 
     private void chooseFolder() {
@@ -1358,7 +1383,8 @@ public final class MainActivity extends Activity {
         dismissKeyboard();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         runState.setText(status);
-        note("[" + LocalDateTime.now().format(LOG_TIME) + "] " + status);
+        String firstEntry = "[" + LocalDateTime.now().format(LOG_TIME) + "] " + status;
+        updateLog(history.append(redactLogText(firstEntry), true));
         progress.setVisibility(View.VISIBLE);
         progress.setIndeterminate(true);
         updateUi();
@@ -1491,7 +1517,7 @@ public final class MainActivity extends Activity {
     }
 
     private void note(String message) {
-        updateLog(history.append(redactLogText(message)));
+        updateLog(history.append(redactLogText(message), false));
     }
 
     private String redactLogText(String message) {
@@ -1527,7 +1553,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.6.1", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.6.2", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
