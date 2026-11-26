@@ -21,6 +21,8 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.net.ssl.SSLException;
+
 final class AssrtSubtitleSource implements SubtitleSource {
     private static final String API_HOST = "api.assrt.net";
     private static final String BACKUP_API_HOST = "api.makedie.me";
@@ -60,6 +62,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
 
     private final String token;
     private String activeApiHost = API_HOST;
+    private boolean backupTlsFailed;
     private long lastApiStarted;
     private boolean hasMadeApiRequest;
 
@@ -215,19 +218,26 @@ final class AssrtSubtitleSource implements SubtitleSource {
     private JSONObject requestWithFallback(String path) throws IOException {
         String firstHost = activeApiHost;
         try {
-            return requestApi(firstHost, path, token);
+            return requestPreferredApi(firstHost, path);
         } catch (IOException firstError) {
             checkRunning();
-            if (!canFailOver(firstError)) {
+            if (!rememberBackupTlsFailure(firstHost, firstError) && !canFailOver(firstError)) {
                 throw firstError;
             }
             String secondHost = firstHost.equals(API_HOST) ? BACKUP_API_HOST : API_HOST;
+            if (secondHost.equals(BACKUP_API_HOST) && backupTlsFailed) {
+                throw new IOException(firstHost + " · " + firstError.getMessage() + "；" + secondHost
+                        + " · 本轮因 HTTPS 连接失败已暂停", firstError);
+            }
             try {
                 JSONObject result = requestApi(secondHost, path, token);
-                activeApiHost = secondHost;
+                if (result.optInt("status", -1) == 0) {
+                    activeApiHost = secondHost;
+                }
                 return result;
             } catch (IOException secondError) {
                 checkRunning();
+                rememberBackupTlsFailure(secondHost, secondError);
                 if (secondError instanceof SubtitleHttp.HttpException && !canFailOver(secondError)) {
                     throw secondError;
                 }
@@ -237,10 +247,32 @@ final class AssrtSubtitleSource implements SubtitleSource {
         }
     }
 
-    private static boolean canFailOver(IOException failure) {
-        if (failure instanceof SubtitleHttp.ConnectionException) {
+    private JSONObject requestPreferredApi(String host, String path) throws IOException {
+        try {
+            return requestApi(host, path, token);
+        } catch (IOException failure) {
+            checkRunning();
+            if (!SubtitleHttp.isRetryableConnection(failure) && !isGatewayFailure(failure)) {
+                throw failure;
+            }
+            return requestApi(host, path, token);
+        }
+    }
+
+    private boolean rememberBackupTlsFailure(String host, IOException failure) {
+        if (host.equals(BACKUP_API_HOST) && failure.getCause() instanceof SSLException) {
+            backupTlsFailed = true;
+            activeApiHost = API_HOST;
             return true;
         }
+        return false;
+    }
+
+    private static boolean canFailOver(IOException failure) {
+        return failure instanceof SubtitleHttp.ConnectionException || isGatewayFailure(failure);
+    }
+
+    private static boolean isGatewayFailure(IOException failure) {
         if (failure instanceof SubtitleHttp.HttpException) {
             SubtitleHttp.HttpException response = (SubtitleHttp.HttpException) failure;
             return response.apiStatus < 0

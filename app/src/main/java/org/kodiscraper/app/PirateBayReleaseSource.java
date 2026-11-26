@@ -4,7 +4,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.net.ConnectException;
+import java.net.ProtocolException;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
@@ -21,8 +26,13 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import javax.net.ssl.SSLException;
+
 final class PirateBayReleaseSource {
     private static final String HOST = "apibay.org";
+    private static final int CONNECT_TIMEOUT_MS = 6_000;
+    private static final int READ_TIMEOUT_MS = 9_000;
+    private static final int RETRY_DELAY_MS = 250;
     private static final int MAX_TITLE_LENGTH = 180;
     private static final int MAX_NAME_LENGTH = 400;
     private static final int MAX_RESPONSE_BYTES = 512 * 1024;
@@ -71,22 +81,57 @@ final class PirateBayReleaseSource {
             throw new IOException("查询资源需要影片名称和上映年份");
         }
         String address = "https://" + HOST + "/q.php?q=" + SubtitleHttp.encode(query + " " + year) + "&cat=201%2C207";
-        byte[] data;
-        try {
-            data = SubtitleHttp.get(address, null, null, MAX_RESPONSE_BYTES, HOST);
-        } catch (SubtitleHttp.HttpException response) {
-            throw new IOException("海盗湾查询返回 HTTP " + response.statusCode, response);
-        } catch (IOException connection) {
-            ScrapeEngine.checkCancelled();
-            if (connection.getCause() instanceof SocketTimeoutException) {
-                throw new IOException("海盗湾查询超时", connection);
-            }
-            if (connection.getCause() instanceof UnknownHostException) {
-                throw new IOException("无法解析海盗湾地址", connection);
-            }
-            throw new IOException("无法连接海盗湾查询服务", connection);
-        }
+        byte[] data = lookup(address);
         return parseCandidates(new String(data, StandardCharsets.UTF_8), query, year, imdbId);
+    }
+
+    private static byte[] lookup(String address) throws IOException {
+        for (int attempt = 0; ; attempt++) {
+            ScrapeEngine.checkCancelled();
+            try {
+                return SubtitleHttp.get(address, null, null, MAX_RESPONSE_BYTES, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, HOST);
+            } catch (IOException failure) {
+                ScrapeEngine.checkCancelled();
+                if (attempt != 0 || !SubtitleHttp.isRetryableConnection(failure)) {
+                    throw lookupError(failure);
+                }
+                try {
+                    Thread.sleep(RETRY_DELAY_MS);
+                } catch (InterruptedException cancelled) {
+                    Thread.currentThread().interrupt();
+                    throw new InterruptedIOException("操作已停止");
+                }
+            }
+        }
+    }
+
+    private static IOException lookupError(IOException failure) {
+        if (failure instanceof SubtitleHttp.HttpException response) {
+            return new IOException(HOST + " 查询返回 HTTP " + response.statusCode, failure);
+        }
+        Throwable cause = failure.getCause() == null ? failure : failure.getCause();
+        if (cause instanceof UnknownHostException) {
+            return new IOException("无法解析 " + HOST + "（DNS）", failure);
+        }
+        if (cause instanceof SocketTimeoutException) {
+            return new IOException("查询 " + HOST + " 超时", failure);
+        }
+        if (failure instanceof InterruptedIOException) {
+            return failure;
+        }
+        if (failure instanceof SSLException || cause instanceof SSLException) {
+            return new IOException(HOST + " 的 HTTPS 连接失败", failure);
+        }
+        if (failure instanceof ProtocolException || cause instanceof ProtocolException) {
+            return new IOException(HOST + " 返回了无效的 HTTP 数据", failure);
+        }
+        if (cause instanceof ConnectException) {
+            return new IOException("无法连接 " + HOST, failure);
+        }
+        if (cause instanceof SocketException || cause instanceof EOFException) {
+            return new IOException(HOST + " 连接中断", failure);
+        }
+        return new IOException("无法读取 " + HOST + " 的查询结果", failure);
     }
 
     static List<Candidate> parseCandidates(String response, String title, int year, String imdbId) throws IOException {

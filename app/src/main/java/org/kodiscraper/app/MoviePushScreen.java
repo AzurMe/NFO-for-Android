@@ -273,6 +273,7 @@ final class MoviePushScreen {
         scroll.setVisibility(View.GONE);
         content.addView(scroll, rowsSpace);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(movie.title()).setView(content)
+                .setNeutralButton("重试", null)
                 .setNegativeButton("关闭", null).create();
         releasesDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
@@ -283,29 +284,40 @@ final class MoviePushScreen {
         });
         dialog.show();
 
-        launch(() -> findReleases(movie), releases -> {
-            if (releases.isEmpty()) {
-                result.setText("没有符合筛选要求的候选链接。");
-                return;
-            }
-            result.setText(releases.size() + " 个候选 · 规格来自发布标题");
-            scroll.setVisibility(View.VISIBLE);
-            for (PirateBayReleaseSource.Candidate release : releases) {
-                LinearLayout row = activity.vertical();
-                row.setPadding(dp(10), dp(8), dp(10), dp(8));
-                row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
-                        activity.shape(PALE, 10, 0), null));
-                activity.add(row, activity.text(release.name, 14, INK, true), 0);
-                activity.add(row, activity.text(releaseSize(release) + " · " + release.seeders
-                        + " 个做种", 12, MUTED, false), 4);
-                row.setFocusable(true);
-                row.setOnClickListener(view -> {
-                    dialog.dismiss();
-                    chooseLink(release);
-                });
-                activity.add(rows, row, 7);
-            }
-        }, error -> result.setText("链接搜索失败 · " + error));
+        Button retry = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+        Runnable search = () -> {
+            if (worker != null) return;
+            retry.setVisibility(View.GONE);
+            result.setText("正在搜索海盗湾…");
+            launch(() -> findReleases(movie), releases -> {
+                if (releases.isEmpty()) {
+                    result.setText("没有符合筛选要求的候选链接。");
+                    return;
+                }
+                result.setText(releases.size() + " 个候选 · 规格来自发布标题");
+                scroll.setVisibility(View.VISIBLE);
+                for (PirateBayReleaseSource.Candidate release : releases) {
+                    LinearLayout row = activity.vertical();
+                    row.setPadding(dp(10), dp(8), dp(10), dp(8));
+                    row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
+                            activity.shape(PALE, 10, 0), null));
+                    activity.add(row, activity.text(release.name, 14, INK, true), 0);
+                    activity.add(row, activity.text(releaseSize(release) + " · " + release.seeders
+                            + " 个做种", 12, MUTED, false), 4);
+                    row.setFocusable(true);
+                    row.setOnClickListener(view -> {
+                        dialog.dismiss();
+                        chooseLink(release);
+                    });
+                    activity.add(rows, row, 7);
+                }
+            }, error -> {
+                result.setText("链接搜索失败 · " + error);
+                retry.setVisibility(View.VISIBLE);
+            });
+        };
+        retry.setOnClickListener(view -> search.run());
+        search.run();
     }
 
     private List<PirateBayReleaseSource.Candidate> findReleases(ImdbMovieFeed.Movie movie) throws IOException {

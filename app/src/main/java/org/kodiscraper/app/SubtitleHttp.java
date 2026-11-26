@@ -23,6 +23,8 @@ import java.util.Map;
 final class SubtitleHttp {
     private static final int JSON_LIMIT = 1024 * 1024;
     private static final int MAX_REDIRECTS = 3;
+    private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
+    private static final int READ_TIMEOUT_MILLIS = 15_000;
     private static final Map<Thread, HttpURLConnection> ACTIVE = new HashMap<>();
 
     private SubtitleHttp() {}
@@ -45,11 +47,21 @@ final class SubtitleHttp {
 
     static byte[] get(String address, String header, String credential, int limit, String... domains)
             throws IOException {
-        return request(address, header, credential, null, limit, domains);
+        return get(address, header, credential, limit, CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS, domains);
+    }
+
+    static byte[] get(String address, String header, String credential, int limit, int connectTimeoutMillis,
+                      int readTimeoutMillis, String... domains) throws IOException {
+        return request(address, header, credential, null, limit, connectTimeoutMillis, readTimeoutMillis, domains);
     }
 
     static byte[] postForm(String address, String form, int limit, String... domains) throws IOException {
-        return request(address, null, null, form.getBytes(StandardCharsets.UTF_8), limit, domains);
+        return request(address, null, null, form.getBytes(StandardCharsets.UTF_8), limit,
+                CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS, domains);
+    }
+
+    static boolean isRetryableConnection(IOException failure) {
+        return failure instanceof ConnectionException && !(failure.getCause() instanceof UnknownHostException);
     }
 
     static void cancel(Thread thread) {
@@ -63,7 +75,7 @@ final class SubtitleHttp {
     }
 
     private static byte[] request(String address, String header, String credential, byte[] form, int limit,
-                                  String[] domains) throws IOException {
+                                  int connectTimeoutMillis, int readTimeoutMillis, String[] domains) throws IOException {
         URI target = address(address);
         String origin = target.getHost();
         Thread worker = Thread.currentThread();
@@ -79,10 +91,10 @@ final class SubtitleHttp {
                     ScrapeEngine.checkCancelled();
                     ACTIVE.put(worker, connection);
                 }
-                connection.setConnectTimeout(10_000);
-                connection.setReadTimeout(15_000);
+                connection.setConnectTimeout(connectTimeoutMillis);
+                connection.setReadTimeout(readTimeoutMillis);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.4.0");
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.4.1");
                 if (header != null) {
                     connection.setRequestProperty(header, credential);
                 }
@@ -118,8 +130,10 @@ final class SubtitleHttp {
                     return read(input, limit);
                 }
             } catch (SocketTimeoutException failure) {
+                ScrapeEngine.checkCancelled();
                 throw new ConnectionException("字幕连接超时", failure);
             } catch (UnknownHostException failure) {
+                ScrapeEngine.checkCancelled();
                 throw new ConnectionException("无法解析字幕服务器地址", failure);
             } catch (SocketException | EOFException failure) {
                 ScrapeEngine.checkCancelled();
