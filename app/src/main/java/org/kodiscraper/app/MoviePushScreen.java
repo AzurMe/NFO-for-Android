@@ -40,22 +40,12 @@ import java.util.Locale;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static org.kodiscraper.app.MainActivity.CARD;
-import static org.kodiscraper.app.MainActivity.DARK;
-import static org.kodiscraper.app.MainActivity.EDGE;
-import static org.kodiscraper.app.MainActivity.GREEN;
-import static org.kodiscraper.app.MainActivity.INK;
-import static org.kodiscraper.app.MainActivity.LIME;
-import static org.kodiscraper.app.MainActivity.MUTED;
-import static org.kodiscraper.app.MainActivity.PALE;
-import static org.kodiscraper.app.MainActivity.PAPER;
-import static org.kodiscraper.app.MainActivity.WHITE;
-
 final class MoviePushScreen {
     private static final double HIGH_RATING = 7.0;
     private static final int[] RELEASE_HEIGHTS = {-1, 4320, 2160, 1440, 1080, 720, 576, 480, 0};
 
     private final MainActivity activity;
+    private final AppAppearance appearance;
     private final Supplier<TmdbClient> tmdbClient;
     private final Runnable configureTmdb;
     private final LinearLayout root;
@@ -81,75 +71,95 @@ final class MoviePushScreen {
     private ImdbMovieFeed activeFeed;
     private AlertDialog releasesDialog;
 
-    MoviePushScreen(MainActivity activity, Runnable openNavigation, Supplier<TmdbClient> tmdbClient,
-                    Runnable configureTmdb) {
+    MoviePushScreen(MainActivity activity, Supplier<TmdbClient> tmdbClient, Runnable configureTmdb) {
         this.activity = activity;
+        appearance = activity.appearance();
         this.tmdbClient = tmdbClient;
         this.configureTmdb = configureTmdb;
         root = activity.vertical();
-        root.setBackgroundColor(PAPER);
-        root.setPadding(dp(18), dp(14), dp(18), dp(10));
-
-        LinearLayout hero = activity.vertical();
-        hero.setPadding(dp(14), dp(12), dp(14), dp(16));
-        hero.setBackground(activity.shape(DARK, 22, 0));
-        LinearLayout heading = activity.horizontal();
-        Button menu = activity.button("☰", 0xff24533f, WHITE);
-        menu.setTextSize(20);
-        menu.setContentDescription("打开导航菜单");
-        menu.setOnClickListener(view -> openNavigation.run());
-        heading.addView(menu, new LinearLayout.LayoutParams(dp(44), dp(44)));
-        TextView title = activity.text("电影推送", 26, WHITE, true);
-        LinearLayout.LayoutParams titleSpace = new LinearLayout.LayoutParams(0, -2, 1f);
-        titleSpace.leftMargin = dp(12);
-        heading.addView(title, titleSpace);
-        refresh = activity.button("刷新", 0xff24533f, WHITE);
+        root.setBackgroundColor(appearance.background);
+        refresh = activity.button("刷新", appearance.tint, appearance.foreground);
         refresh.setOnClickListener(view -> refreshClicked());
-        heading.addView(refresh, new LinearLayout.LayoutParams(-2, dp(44)));
-        activity.add(hero, heading, 0);
-        range = activity.text("最近 30 天上映", 13, LIME, false);
-        activity.add(hero, range, 8);
-        activity.add(root, hero, 0);
+        activity.add(root, activity.createToolbar("电影推送", refresh), 0);
+
+        LinearLayout content = activity.vertical();
+        content.setPadding(dp(18), dp(3), dp(18), dp(10));
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1f));
+        range = activity.text("最近 30 天上映", 13, appearance.muted, false);
+        activity.add(content, range, 0);
 
         LinearLayout filters = activity.horizontal();
-        popular = activity.button("热门 · 投票数", GREEN, WHITE);
+        filters.setBackground(activity.shape(appearance.tint, 14, 0));
+        filters.setPadding(dp(4), dp(4), dp(4), dp(4));
+        popular = activity.button("热门 · 投票数", appearance.primary, appearance.onPrimary);
+        popular.setMinHeight(dp(48));
         popular.setOnClickListener(view -> sort(false));
-        filters.addView(popular, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        rated = activity.button("高分 · 7.0 以上", PALE, GREEN);
+        filters.addView(popular, new LinearLayout.LayoutParams(0, -2, 1f));
+        rated = activity.button("高分 · 7.0 以上", appearance.tint, appearance.foreground);
+        rated.setMinHeight(dp(48));
         rated.setOnClickListener(view -> sort(true));
-        LinearLayout.LayoutParams ratedSpace = new LinearLayout.LayoutParams(0, dp(44), 1f);
-        ratedSpace.leftMargin = dp(8);
+        LinearLayout.LayoutParams ratedSpace = new LinearLayout.LayoutParams(0, -2, 1f);
+        ratedSpace.leftMargin = dp(4);
         filters.addView(rated, ratedSpace);
-        activity.add(root, filters, 12);
+        activity.add(content, filters, 8);
         markFilter(popular, true);
+        markFilter(rated, false);
 
         progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminate(true);
-        progress.setIndeterminateTintList(ColorStateList.valueOf(GREEN));
+        progress.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
         progress.setVisibility(View.GONE);
-        LinearLayout.LayoutParams barSpace = new LinearLayout.LayoutParams(-1, dp(5));
-        barSpace.topMargin = dp(9);
-        root.addView(progress, barSpace);
-        status = activity.text("", 13, MUTED, false);
+        LinearLayout.LayoutParams barSpace = new LinearLayout.LayoutParams(-1, dp(4));
+        barSpace.topMargin = dp(8);
+        content.addView(progress, barSpace);
+        status = activity.text("", 13, appearance.muted, false);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        activity.add(root, status, 10);
+        activity.add(content, status, 8);
 
         movieList = new ScrollView(activity);
         movieList.setClipToPadding(false);
         movieList.setFillViewport(true);
         movieList.setOnScrollChangeListener((view, x, y, oldX, oldY) -> loadVisiblePosters());
-        root.addView(movieList, new LinearLayout.LayoutParams(-1, 0, 1));
+        content.addView(movieList, new LinearLayout.LayoutParams(-1, 0, 1));
         entries = activity.vertical();
         entries.setPadding(0, dp(2), 0, dp(4));
         movieList.addView(entries, new ScrollView.LayoutParams(-1, -2));
         movieList.getViewTreeObserver().addOnGlobalLayoutListener(this::loadVisiblePosters);
         TextView attribution = activity.text("影片资料与海报由 TMDB 提供。\nInformation courtesy of IMDb "
-                + "(https://www.imdb.com). Used with permission.", 11, MUTED, false);
-        activity.add(root, attribution, 6);
+                + "(https://www.imdb.com). Used with permission.", 11, appearance.muted, false);
+        activity.add(content, attribution, 5);
     }
 
     View view() {
         return root;
+    }
+
+    boolean isBusy() {
+        return worker != null;
+    }
+
+    record State(List<ImdbMovieFeed.Movie> movies, LocalDate loadedThrough, boolean highRated, int scrollY) {}
+
+    State saveState() {
+        return new State(Collections.unmodifiableList(new ArrayList<>(movies)), loadedThrough,
+                highRated, movieList.getScrollY());
+    }
+
+    void restoreState(State state) {
+        if (state == null) {
+            return;
+        }
+        highRated = state.highRated();
+        markFilter(popular, !highRated);
+        markFilter(rated, highRated);
+        if (state.loadedThrough() != null) {
+            loadedThrough = state.loadedThrough();
+            movies = state.movies();
+            requested = true;
+            updateRange();
+            renderMovies();
+            movieList.post(() -> movieList.scrollTo(0, state.scrollY()));
+        }
     }
 
     void onShown() {
@@ -202,7 +212,7 @@ final class MoviePushScreen {
         launch(() -> feed.load(tmdb, today), result -> {
             movies = result;
             loadedThrough = today;
-            range.setText(today.minusDays(29) + " 至 " + today + " 上映");
+            updateRange();
             setFeedLoading(false);
             renderMovies();
         }, error -> {
@@ -210,6 +220,10 @@ final class MoviePushScreen {
             renderMovies();
             status.setText("刷新失败 · " + error);
         });
+    }
+
+    private void updateRange() {
+        range.setText(loadedThrough.minusDays(29) + " 至 " + loadedThrough + " 上映");
     }
 
     private void setFeedLoading(boolean loading) {
@@ -233,9 +247,11 @@ final class MoviePushScreen {
 
     private void markFilter(Button button, boolean selected) {
         button.setSelected(selected);
-        button.setTextColor(selected ? WHITE : GREEN);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
-                activity.shape(selected ? GREEN : PALE, 12, 0), null));
+        button.setTextColor(new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}},
+                new int[]{selected ? appearance.onPrimary : appearance.disabled,
+                        selected ? appearance.onPrimary : appearance.foreground}));
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
+                activity.shape(selected ? appearance.primary : appearance.tint, 10, 0), null));
     }
 
     private void renderMovies() {
@@ -256,12 +272,12 @@ final class MoviePushScreen {
         NumberFormat number = NumberFormat.getIntegerInstance(Locale.SIMPLIFIED_CHINESE);
         for (ImdbMovieFeed.Movie movie : visible) {
             LinearLayout card = activity.vertical();
-            card.setPadding(dp(14), dp(12), dp(14), dp(13));
-            card.setBackground(activity.shape(CARD, 16, EDGE));
+            card.setPadding(dp(14), dp(13), dp(14), dp(12));
+            card.setBackground(activity.shape(appearance.surface, 16, appearance.border));
             LinearLayout summary = activity.horizontal();
             summary.setGravity(Gravity.TOP);
             ImageView poster = moviePoster(movie);
-            summary.addView(poster, new LinearLayout.LayoutParams(dp(78), dp(117)));
+            summary.addView(poster, new LinearLayout.LayoutParams(dp(72), dp(108)));
             if (!movie.posterPath().isEmpty()) {
                 posters.add(new PosterBinding(poster, movie.posterPath()));
             }
@@ -269,61 +285,63 @@ final class MoviePushScreen {
             LinearLayout.LayoutParams factsSpace = new LinearLayout.LayoutParams(0, -2, 1f);
             factsSpace.leftMargin = dp(12);
             summary.addView(facts, factsSpace);
-            LinearLayout titleRow = activity.horizontal();
-            TextView title = activity.text(movie.title(), 18, INK, true);
+            TextView title = activity.text(movie.title(), 18, appearance.foreground, true);
             title.setMaxLines(2);
             title.setEllipsize(TextUtils.TruncateAt.END);
-            titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
-            String score = String.format(Locale.ROOT, "IMDb %.1f", movie.rating());
-            TextView badge = activity.text(score, 13, INK, true);
-            badge.setPadding(dp(9), dp(5), dp(9), dp(5));
-            badge.setBackground(activity.shape(LIME, 9, 0));
-            LinearLayout.LayoutParams badgeSpace = new LinearLayout.LayoutParams(-2, -2);
-            badgeSpace.leftMargin = dp(5);
-            titleRow.addView(badge, badgeSpace);
-            activity.add(facts, titleRow, 0);
+            activity.add(facts, title, 0);
             if (!movie.originalTitle().isEmpty() && !movie.originalTitle().equalsIgnoreCase(movie.title())) {
-                TextView original = activity.text(movie.originalTitle(), 13, MUTED, false);
+                TextView original = activity.text(movie.originalTitle(), 13, appearance.muted, false);
                 original.setMaxLines(2);
                 original.setEllipsize(TextUtils.TruncateAt.END);
                 activity.add(facts, original, 3);
             }
+            String score = String.format(Locale.ROOT, "IMDb %.1f", movie.rating());
+            TextView badge = activity.text(score, 12, appearance.foreground, true);
+            badge.setPadding(dp(8), dp(3), dp(8), dp(3));
+            badge.setBackground(activity.shape(appearance.tint, 7, 0));
+            LinearLayout.LayoutParams badgeSpace = new LinearLayout.LayoutParams(-2, -2);
+            badgeSpace.topMargin = dp(5);
+            facts.addView(badge, badgeSpace);
             activity.add(facts, activity.text(movie.releaseDate() + " · " + number.format(movie.votes())
-                    + " 票", 13, MUTED, false), 6);
+                    + " 票", 13, appearance.muted, false), 4);
             if (!movie.genres().isEmpty()) {
-                TextView genres = activity.text(String.join(" · ", movie.genres()), 12, GREEN, true);
+                TextView genres = activity.text(String.join(" · ", movie.genres()), 12, appearance.muted, false);
                 genres.setMaxLines(2);
                 genres.setEllipsize(TextUtils.TruncateAt.END);
-                activity.add(facts, genres, 7);
+                activity.add(facts, genres, 4);
             }
             activity.add(card, summary, 0);
             if (!movie.overview().isEmpty()) {
-                TextView overview = activity.text(movie.overview(), 13, MUTED, false);
+                TextView overview = activity.text(movie.overview(), 13, appearance.muted, false);
                 overview.setMaxLines(3);
                 overview.setEllipsize(TextUtils.TruncateAt.END);
                 overview.setLineSpacing(dp(2), 1f);
                 activity.add(card, overview, 9);
             }
             LinearLayout actions = activity.horizontal();
-            Button details = activity.button("影片详情", PALE, GREEN);
+            Button details = activity.button("影片详情", appearance.surface, appearance.foreground);
+            details.setMinHeight(dp(48));
             details.setContentDescription("影片详情 · " + movie.title());
             details.setOnClickListener(view -> showMovieDetails(movie));
-            actions.addView(details, new LinearLayout.LayoutParams(0, dp(44), 1f));
-            Button select = activity.button("查找下载链接", PALE, GREEN);
+            details.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
+                    activity.shape(appearance.surface, 12, appearance.border), null));
+            actions.addView(details, new LinearLayout.LayoutParams(0, -2, 1f));
+            Button select = activity.button("查找下载链接", appearance.tint, appearance.accent);
+            select.setMinHeight(dp(48));
             select.setContentDescription("查找下载链接 · " + movie.title());
             select.setOnClickListener(view -> showReleases(movie));
-            LinearLayout.LayoutParams selectSpace = new LinearLayout.LayoutParams(0, dp(44), 1f);
+            LinearLayout.LayoutParams selectSpace = new LinearLayout.LayoutParams(0, -2, 1f);
             selectSpace.leftMargin = dp(8);
             actions.addView(select, selectSpace);
-            activity.add(card, actions, 10);
-            activity.add(entries, card, 10);
+            activity.add(card, actions, 9);
+            activity.add(entries, card, 8);
         }
         movieList.post(this::loadVisiblePosters);
     }
 
     private ImageView moviePoster(ImdbMovieFeed.Movie movie) {
         ImageView poster = new ImageView(activity);
-        poster.setBackground(activity.shape(PALE, 10, EDGE));
+        poster.setBackground(activity.shape(appearance.tint, 9, appearance.border));
         poster.setClipToOutline(true);
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         if (!movie.posterPath().isEmpty()) {
@@ -355,18 +373,18 @@ final class MoviePushScreen {
         factsSpace.leftMargin = dp(14);
         summary.addView(facts, factsSpace);
         if (!movie.originalTitle().isEmpty() && !movie.originalTitle().equalsIgnoreCase(movie.title())) {
-            activity.add(facts, activity.text(movie.originalTitle(), 15, INK, true), 0);
+            activity.add(facts, activity.text(movie.originalTitle(), 15, appearance.foreground, true), 0);
         }
         activity.add(facts, activity.text(String.format(Locale.ROOT, "IMDb %.1f · %,d 票", movie.rating(),
-                movie.votes()), 15, GREEN, true), 5);
-        activity.add(facts, activity.text(movie.releaseDate() + " 上映", 13, MUTED, false), 7);
+                movie.votes()), 15, appearance.foreground, true), 5);
+        activity.add(facts, activity.text(movie.releaseDate() + " 上映", 13, appearance.muted, false), 7);
         if (!movie.genres().isEmpty()) {
-            activity.add(facts, activity.text(String.join(" · ", movie.genres()), 13, GREEN, true), 8);
+            activity.add(facts, activity.text(String.join(" · ", movie.genres()), 13, appearance.muted, false), 8);
         }
         activity.add(content, summary, 0);
-        activity.add(content, activity.text("简介", 16, INK, true), 14);
+        activity.add(content, activity.text("简介", 16, appearance.foreground, true), 14);
         TextView overview = activity.text(movie.overview().isEmpty() ? "暂无简介" : movie.overview(),
-                14, MUTED, false);
+                14, appearance.muted, false);
         overview.setLineSpacing(dp(4), 1f);
         activity.add(content, overview, 6);
         content.setPadding(dp(22), dp(12), dp(22), dp(12));
@@ -384,16 +402,17 @@ final class MoviePushScreen {
         if (worker != null) return;
         LinearLayout content = dialogContent();
         LinearLayout tools = activity.horizontal();
-        TextView result = activity.text("正在搜索海盗湾…", 13, MUTED, true);
+        TextView result = activity.text("正在搜索海盗湾…", 13, appearance.muted, true);
         result.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         tools.addView(result, new LinearLayout.LayoutParams(0, -2, 1f));
-        Button filter = activity.button("筛选", PALE, GREEN);
+        Button filter = activity.button("筛选", appearance.tint, appearance.accent);
+        filter.setMinHeight(dp(48));
         filter.setEnabled(false);
-        LinearLayout.LayoutParams filterSpace = new LinearLayout.LayoutParams(-2, dp(44));
+        LinearLayout.LayoutParams filterSpace = new LinearLayout.LayoutParams(-2, -2);
         filterSpace.leftMargin = dp(8);
         tools.addView(filter, filterSpace);
         activity.add(content, tools, 0);
-        TextView notice = activity.text("", 12, MUTED, false);
+        TextView notice = activity.text("", 12, appearance.muted, false);
         notice.setVisibility(View.GONE);
         activity.add(content, notice, 6);
         ListView list = new ListView(activity);
@@ -479,7 +498,8 @@ final class MoviePushScreen {
 
     private void showReleaseFilters(ReleaseFilter current, Consumer<ReleaseFilter> apply) {
         LinearLayout form = dialogContent();
-        Button preset = activity.button("2160p · HDR10 · 小于 40 GB", PALE, GREEN);
+        Button preset = activity.button("2160p · HDR10 · 小于 40 GB", appearance.tint, appearance.accent);
+        preset.setMinHeight(dp(48));
         activity.add(form, preset, 0);
 
         String[] resolutions = new String[RELEASE_HEIGHTS.length];
@@ -489,31 +509,26 @@ final class MoviePushScreen {
             if (height == current.height()) resolutionIndex = index;
             resolutions[index] = height < 0 ? "不限" : height == 0 ? "未标注" : height + "p";
         }
-        activity.add(form, activity.text("分辨率", 13, INK, true), 9);
         Spinner resolution = filterSpinner(resolutions, resolutionIndex);
-        activity.add(form, resolution, 2);
+        addFilterControl(form, "分辨率", resolution);
 
         ReleaseFilter.VideoFormat[] formats = ReleaseFilter.VideoFormat.values();
         String[] labels = new String[formats.length];
         for (int index = 0; index < formats.length; index++) labels[index] = formats[index].label;
-        activity.add(form, activity.text("HDR 格式", 13, INK, true), 7);
         Spinner videoFormat = filterSpinner(labels, current.format().ordinal());
-        activity.add(form, videoFormat, 2);
+        addFilterControl(form, "HDR 格式", videoFormat);
 
-        activity.add(form, activity.text("大小小于（GB）", 13, INK, true), 7);
         EditText max = filterField("不限", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, 24);
         if (current.maxBytesExclusive() > 0) {
             max.setText(BigDecimal.valueOf(current.maxBytesExclusive(), 9).stripTrailingZeros().toPlainString());
         }
-        activity.add(form, max, 4);
-        activity.add(form, activity.text("最少做种数", 13, INK, true), 7);
+        addFilterControl(form, "大小小于（GB）", max);
         EditText minimum = filterField("不限", InputType.TYPE_CLASS_NUMBER, 12);
         if (current.minSeeders() > 0) minimum.setText(Integer.toString(current.minSeeders()));
-        activity.add(form, minimum, 4);
-        activity.add(form, activity.text("标题关键字", 13, INK, true), 7);
+        addFilterControl(form, "最少做种数", minimum);
         EditText keyword = filterField("可选", InputType.TYPE_CLASS_TEXT, 120);
         keyword.setText(current.keyword());
-        activity.add(form, keyword, 4);
+        addFilterControl(form, "标题关键字", keyword);
 
         ScrollView scroll = new ScrollView(activity);
         scroll.addView(form);
@@ -547,20 +562,28 @@ final class MoviePushScreen {
         });
     }
 
+    private void addFilterControl(LinearLayout form, String name, View control) {
+        TextView label = activity.text(name, 13, appearance.foreground, true);
+        control.setId(View.generateViewId());
+        label.setLabelFor(control.getId());
+        activity.add(form, label, 9);
+        activity.add(form, control, 4);
+    }
+
     private Spinner filterSpinner(String[] values, int selected) {
         Spinner spinner = new Spinner(activity);
         ArrayAdapter<String> options = new ArrayAdapter<>(activity, android.R.layout.simple_spinner_item, values);
         options.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         spinner.setAdapter(options);
         spinner.setSelection(selected);
-        spinner.setMinimumHeight(dp(44));
-        spinner.setBackground(activity.shape(PALE, 8, EDGE));
+        spinner.setMinimumHeight(dp(48));
         return spinner;
     }
 
     private EditText filterField(String hint, int type, int maxLength) {
         EditText field = activity.field(hint, type);
         field.setSingleLine(true);
+        field.setMinHeight(dp(48));
         field.setFilters(new InputFilter[]{new InputFilter.LengthFilter(maxLength)});
         return field;
     }
@@ -599,10 +622,10 @@ final class MoviePushScreen {
             if (convertView == null) {
                 LinearLayout row = activity.vertical();
                 row.setPadding(dp(10), dp(10), dp(10), dp(10));
-                row.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
-                        activity.shape(PALE, 10, 0), null));
-                TextView title = activity.text("", 14, INK, true);
-                TextView tags = activity.text("", 12, MUTED, false);
+                row.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
+                        activity.shape(appearance.tint, 10, 0), null));
+                TextView title = activity.text("", 14, appearance.foreground, true);
+                TextView tags = activity.text("", 12, appearance.muted, false);
                 activity.add(row, title, 0);
                 activity.add(row, tags, 5);
                 fields = new ReleaseRow(title, tags);

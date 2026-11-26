@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="appearance_background">#101113</color>
+    <color name="appearance_surface">#191B1F</color>
+    <color name="appearance_foreground">#F2F3F5</color>
+    <color name="appearance_muted">#AFB3BB</color>
+    <color name="appearance_border">#393D44</color>
+    <color name="appearance_tint">#24272C</color>
+    <color name="appearance_primary">#E5E7EB</color>
+    <color name="appearance_on_primary">#121417</color>
+    <color name="appearance_accent">#CCD0D8</color>
+    <color name="appearance_disabled">#737984</color>
+    <color name="appearance_ripple">#24FFFFFF</color>
+    <color name="appearance_scrim">#B3000000</color>
+
+    <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:colorAccent">@color/appearance_accent</item>
+        <item name="android:colorControlActivated">@color/appearance_primary</item>
+        <item name="android:colorControlNormal">@color/appearance_muted</item>
+        <item name="android:colorControlHighlight">@color/appearance_ripple</item>
+        <item name="android:colorBackgroundFloating">@color/appearance_surface</item>
+        <item name="android:colorForeground">@color/appearance_foreground</item>
+        <item name="android:textColorPrimary">@color/appearance_foreground</item>
+        <item name="android:textColorSecondary">@color/appearance_muted</item>
+        <item name="android:textColorHint">@color/appearance_muted</item>
+        <item name="android:textColorLink">@color/appearance_accent</item>
+        <item name="android:alertDialogTheme">@style/AppDialogTheme</item>
+        <item name="android:switchStyle">@style/AppSwitch</item>
+        <item name="android:colorPrimary">@color/appearance_primary</item>
+        <item name="android:colorPrimaryDark">@color/appearance_background</item>
+        <item name="android:colorBackground">@color/appearance_background</item>
+        <item name="android:windowBackground">@color/appearance_background</item>
+        <item name="android:statusBarColor">@color/appearance_background</item>
+        <item name="android:navigationBarColor">@color/appearance_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+
+    <style name="AppDialogTheme" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:colorAccent">@color/appearance_accent</item>
+        <item name="android:colorControlActivated">@color/appearance_primary</item>
+        <item name="android:colorControlNormal">@color/appearance_muted</item>
+        <item name="android:colorControlHighlight">@color/appearance_ripple</item>
+        <item name="android:colorBackgroundFloating">@color/appearance_surface</item>
+        <item name="android:colorForeground">@color/appearance_foreground</item>
+        <item name="android:textColorPrimary">@color/appearance_foreground</item>
+        <item name="android:textColorSecondary">@color/appearance_muted</item>
+        <item name="android:textColorHint">@color/appearance_muted</item>
+        <item name="android:textColorLink">@color/appearance_accent</item>
+        <item name="android:switchStyle">@style/AppSwitch</item>
+        <item name="android:colorBackground">@color/appearance_surface</item>
+    </style>
+</resources>

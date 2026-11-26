@@ -4,6 +4,8 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 [下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest) · [版本更新记录](#版本更新记录)
 
+在侧边栏选择 **外观**，可跟随系统或手动切换浅色与深色。浅色使用浅蓝和白色，深色使用黑色和灰色。
+
 ## 电影推送
 
 1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。应用沿用已配置的 TMDB 凭据取得近 30 天影片及其海报、简介和类型标签。点 **影片详情** 可以展开简介。
@@ -80,6 +82,11 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.6.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.0)
+
+- 更新刮削页和电影推送页的标题栏、卡片与操作按钮，简化信息层级。
+- 加入浅蓝白色和黑灰深色主题，侧边栏可跟随系统或手动切换，弹窗和输入控件也会随外观变化。
 
 ### [v1.5.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.5.0)
 

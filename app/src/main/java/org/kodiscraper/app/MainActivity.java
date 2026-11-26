@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -23,6 +22,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.window.OnBackInvokedCallback;
@@ -39,6 +39,7 @@ import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -56,17 +57,6 @@ public final class MainActivity extends Activity {
             | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     private static final Uri MOVIES_LOCATION = DocumentsContract.buildDocumentUri(
             "com.android.externalstorage.documents", "primary:Movies");
-    static final int INK = 0xff142a21;
-    static final int MUTED = 0xff4e675a;
-    static final int GREEN = 0xff194b39;
-    static final int DARK = 0xff10392c;
-    static final int LIME = 0xffe1f28c;
-    static final int PAPER = 0xfff4f4eb;
-    static final int CARD = 0xfffffff9;
-    static final int EDGE = 0xffdce5d8;
-    static final int PALE = 0xffedf3e5;
-    static final int WHITE = Color.WHITE;
-    static final int RED = 0xff9b372c;
     private static final String STATE_MOVIE_PUSH = "movie_push_visible";
     private static final String[] LANGUAGES = {"zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES"};
     private static final String[] LANGUAGE_NAMES = {"简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español"};
@@ -82,6 +72,8 @@ public final class MainActivity extends Activity {
     private Uri folder;
     private Uri collectionFolder;
     private SharedPreferences settings;
+    private AppAppearance appearance;
+    private AppAppearance.Mode appearanceMode;
     private List<MovieStorage.Movie> movies = Collections.emptyList();
     private FrameLayout frame;
     private FrameLayout pageHost;
@@ -94,6 +86,7 @@ public final class MainActivity extends Activity {
     private Runnable pendingScraperDialog;
     private OnBackInvokedCallback navigationBackCallback;
     private MoviePushScreen moviePush;
+    private MoviePushScreen.State retainedMoviePush;
     private View moviePushPage;
     private boolean showingMoviePush;
     private ScrollView scroll;
@@ -127,9 +120,17 @@ public final class MainActivity extends Activity {
     private String savedSubdlKey = "";
 
     @Override
+    protected void attachBaseContext(Context base) {
+        super.attachBaseContext(AppAppearance.wrap(base));
+    }
+
+    @Override
     public void onCreate(Bundle state) {
+        setTheme(R.style.AppTheme);
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
+        appearance = AppAppearance.from(this);
+        appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
         savedAssrtToken = CredentialStore.read(settings, "assrt");
         savedSubdlKey = CredentialStore.read(settings, "subdl");
@@ -141,33 +142,81 @@ public final class MainActivity extends Activity {
         if (!savedCollectionFolder.isEmpty()) {
             collectionFolder = Uri.parse(savedCollectionFolder);
         }
+        RetainedUi retained = getLastNonConfigurationInstance() instanceof RetainedUi value ? value : null;
+        if (retained != null) {
+            messages.addAll(retained.messages());
+            needsReview.addAll(retained.needsReview());
+            movies = retained.movies();
+            apiVerified = retained.apiVerified();
+            retainedMoviePush = retained.moviePush();
+        }
         configureWindow();
         buildScreen();
+        if (retained != null) {
+            updateLog();
+            runState.setText(retained.runText());
+            diagnosticReport.setText(retained.report());
+            diagnosticReport.setVisibility(retained.reportVisible() ? View.VISIBLE : View.GONE);
+            scroll.post(() -> scroll.scrollTo(0, retained.scraperScroll()));
+        }
         if (state != null && state.getBoolean(STATE_MOVIE_PUSH)) {
             showPage(true);
         }
     }
 
+    AppAppearance appearance() {
+        return appearance;
+    }
+
+    @Override
+    public Object onRetainNonConfigurationInstance() {
+        MoviePushScreen.State pushState = moviePush == null ? retainedMoviePush : moviePush.saveState();
+        String status = busy ? "任务已中断" : runState.getText().toString();
+        return new RetainedUi(new ArrayList<>(messages), new HashSet<>(needsReview), new ArrayList<>(movies),
+                apiVerified, status, diagnosticReport.getText().toString(),
+                diagnosticReport.getVisibility() == View.VISIBLE, scroll.getScrollY(), pushState);
+    }
+
+    private record RetainedUi(List<String> messages, Set<String> needsReview, List<MovieStorage.Movie> movies,
+                              boolean apiVerified, String runText, String report, boolean reportVisible,
+                              int scraperScroll, MoviePushScreen.State moviePush) {}
+
     private void configureWindow() {
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        getWindow().setStatusBarColor(appearance.background);
+        getWindow().setNavigationBarColor(appearance.background);
+        if (Build.VERSION.SDK_INT >= 29) {
+            getWindow().setStatusBarContrastEnforced(false);
+            getWindow().setNavigationBarContrastEnforced(false);
+        }
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = getWindow().getInsetsController();
+            if (controller != null) {
+                int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                controller.setSystemBarsAppearance(appearance.dark ? 0 : lightBars, lightBars);
+            }
+        } else {
+            View decor = getWindow().getDecorView();
+            int lightBars = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            int flags = decor.getSystemUiVisibility() & ~lightBars;
+            decor.setSystemUiVisibility(appearance.dark ? flags : flags | lightBars);
         }
-        getWindow().setStatusBarColor(PAPER);
-        getWindow().setNavigationBarColor(PAPER);
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
     }
 
     private void buildScreen() {
         frame = new FrameLayout(this);
-        frame.setBackgroundColor(PAPER);
+        frame.setBackgroundColor(appearance.background);
         frame.setFocusableInTouchMode(true);
         pageHost = new FrameLayout(this);
         frame.addView(pageHost, new FrameLayout.LayoutParams(-1, -1));
         scraperPage = vertical();
         pageHost.addView(scraperPage, viewport());
-        addToolbar(scraperPage);
+        Button about = button("关于", appearance.tint, appearance.accent);
+        about.setContentDescription("关于与 TMDB 署名");
+        about.setOnClickListener(view -> showAbout());
+        scraperPage.addView(createToolbar("电影刮削器", about), new LinearLayout.LayoutParams(-1, -2));
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setClipToPadding(false);
@@ -184,9 +233,8 @@ public final class MainActivity extends Activity {
             return insets;
         });
         LinearLayout column = vertical();
-        column.setPadding(dp(18), dp(14), dp(18), dp(16));
+        column.setPadding(dp(16), dp(4), dp(16), dp(14));
         scroll.addView(column, new ScrollView.LayoutParams(-1, -2));
-        addHeader(column);
         addDirectory(column);
         addConnection(column);
         addSubtitles(column);
@@ -231,14 +279,14 @@ public final class MainActivity extends Activity {
         navigationOverlay = new FrameLayout(this);
         navigationOverlay.setVisibility(View.GONE);
         View scrim = new View(this);
-        scrim.setBackgroundColor(0x7811261d);
+        scrim.setBackgroundColor(appearance.scrim);
         scrim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         scrim.setOnClickListener(view -> closeNavigation(true));
         navigationOverlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
 
         navigationPanel = new ScrollView(this);
         navigationPanel.setFillViewport(true);
-        navigationPanel.setBackgroundColor(CARD);
+        navigationPanel.setBackgroundColor(appearance.surface);
         navigationPanel.setElevation(dp(14));
         navigationPanel.setClickable(true);
         if (Build.VERSION.SDK_INT >= 28) {
@@ -250,24 +298,49 @@ public final class MainActivity extends Activity {
         navigationPanel.addView(content, new ScrollView.LayoutParams(-1, -2));
 
         LinearLayout heading = horizontal();
-        heading.setBackground(shape(DARK, 16, 0));
-        heading.setPadding(dp(14), dp(8), dp(8), dp(8));
-        TextView name = text("NFO for Android", 17, WHITE, true);
+        heading.setPadding(dp(8), 0, 0, 0);
+        TextView name = text("NFO for Android", 18, appearance.foreground, true);
         heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
-        Button dismiss = button("×", 0xff24533f, WHITE);
+        Button dismiss = button("×", appearance.tint, appearance.accent);
         dismiss.setTextSize(22);
         dismiss.setContentDescription("关闭导航菜单");
         dismiss.setOnClickListener(view -> closeNavigation(true));
         heading.addView(dismiss, new LinearLayout.LayoutParams(dp(48), dp(48)));
         add(content, heading, 0);
 
-        scraperNavigation = navigationItem(content, "电影刮削器", 14, false);
-        moviePushNavigation = navigationItem(content, "电影推送", 6, true);
+        scraperNavigation = navigationItem(content, "电影刮削器", 15, false);
+        moviePushNavigation = navigationItem(content, "电影推送", 5, true);
+        addDivider(content, 12);
+        Button appearanceNavigation = button("外观 · " + appearanceMode.label, appearance.surface, appearance.foreground);
+        appearanceNavigation.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        appearanceNavigation.setPadding(dp(14), 0, dp(14), 0);
+        appearanceNavigation.setMinHeight(dp(48));
+        appearanceNavigation.setOnClickListener(view -> showAppearanceDialog());
+        add(content, appearanceNavigation, 8);
         frame.addView(navigationOverlay, new FrameLayout.LayoutParams(-1, -1));
     }
 
+    private void showAppearanceDialog() {
+        if (busy || (moviePush != null && moviePush.isBusy()) || pendingScraperDialog != null) {
+            Toast.makeText(this, "当前操作完成后可切换外观", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        AppAppearance.Mode[] modes = AppAppearance.Mode.values();
+        String[] labels = new String[modes.length];
+        for (int index = 0; index < modes.length; index++) labels[index] = modes[index].label;
+        new AlertDialog.Builder(this).setTitle("外观")
+                .setSingleChoiceItems(labels, appearanceMode.ordinal(), (dialog, position) -> {
+                    dialog.dismiss();
+                    if (modes[position] != appearanceMode) {
+                        AppAppearance.save(settings, modes[position]);
+                        recreate();
+                    }
+                })
+                .setNegativeButton("取消", null).show();
+    }
+
     private Button navigationItem(LinearLayout parent, String label, int top, boolean moviePush) {
-        Button item = button(label, CARD, INK);
+        Button item = button(label, appearance.surface, appearance.foreground);
         item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         item.setPadding(dp(15), 0, dp(15), 0);
         item.setTextSize(16);
@@ -297,9 +370,9 @@ public final class MainActivity extends Activity {
 
     private void updateNavigationItem(Button item, boolean selected) {
         item.setSelected(selected);
-        item.setTextColor(selected ? GREEN : INK);
-        item.setBackground(new RippleDrawable(ColorStateList.valueOf(0x290e291b),
-                shape(selected ? PALE : CARD, 12, 0), null));
+        item.setTextColor(selected ? appearance.accent : appearance.foreground);
+        item.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
+                shape(selected ? appearance.tint : appearance.surface, 12, 0), null));
     }
 
     private void closeNavigation(boolean restoreFocus) {
@@ -323,10 +396,13 @@ public final class MainActivity extends Activity {
             return;
         }
         if (showMoviePush && moviePush == null) {
-            moviePush = new MoviePushScreen(this, this::openNavigation, this::moviePushClient,
-                    this::configureTmdbFromMoviePush);
+            moviePush = new MoviePushScreen(this, this::moviePushClient, this::configureTmdbFromMoviePush);
             moviePushPage = moviePush.view();
             pageHost.addView(moviePushPage, viewport());
+            if (retainedMoviePush != null) {
+                moviePush.restoreState(retainedMoviePush);
+                retainedMoviePush = null;
+            }
         }
         showingMoviePush = showMoviePush;
         scraperPage.setVisibility(showMoviePush ? View.GONE : View.VISIBLE);
@@ -407,52 +483,45 @@ public final class MainActivity extends Activity {
         state.putBoolean(STATE_MOVIE_PUSH, showingMoviePush);
     }
 
-    private void addToolbar(LinearLayout page) {
+    LinearLayout createToolbar(String label, View trailing) {
+        LinearLayout toolbar = vertical();
+        toolbar.setBackgroundColor(appearance.surface);
         LinearLayout top = horizontal();
-        top.setPadding(dp(18), dp(6), dp(18), dp(4));
-        Button menu = button("☰", PALE, GREEN);
-        menu.setTextSize(22);
+        top.setPadding(dp(14), dp(5), dp(14), dp(5));
+        Button menu = button("☰", appearance.surface, appearance.foreground);
+        menu.setTextSize(20);
         menu.setContentDescription("打开导航菜单");
         menu.setOnClickListener(view -> openNavigation());
         top.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        ImageView icon = new ImageView(this);
-        icon.setImageResource(R.mipmap.ic_launcher);
-        icon.setContentDescription("NFO for Android");
-        LinearLayout.LayoutParams iconLayout = new LinearLayout.LayoutParams(dp(34), dp(34));
-        iconLayout.leftMargin = dp(10);
-        top.addView(icon, iconLayout);
-        TextView wordmark = text("KODI · 电影资料库", 12, GREEN, true);
-        wordmark.setLetterSpacing(.08f);
-        LinearLayout.LayoutParams mark = new LinearLayout.LayoutParams(0, -2, 1f);
-        mark.leftMargin = dp(8);
-        top.addView(wordmark, mark);
-        Button about = button("关于", PALE, GREEN);
-        about.setContentDescription("关于与 TMDB 署名");
-        top.addView(about, new LinearLayout.LayoutParams(dp(62), dp(48)));
-        about.setOnClickListener(view -> showAbout());
-        page.addView(top, new LinearLayout.LayoutParams(-1, -2));
+        TextView title = text(label, 21, appearance.foreground, true);
+        LinearLayout.LayoutParams titleSpace = new LinearLayout.LayoutParams(0, -2, 1f);
+        titleSpace.leftMargin = dp(8);
+        top.addView(title, titleSpace);
+        if (trailing != null) {
+            trailing.setMinimumWidth(dp(48));
+            top.addView(trailing, new LinearLayout.LayoutParams(-2, dp(48)));
+        }
+        toolbar.addView(top, new LinearLayout.LayoutParams(-1, -2));
+        addDivider(toolbar, 0);
+        return toolbar;
     }
 
-    private void addHeader(LinearLayout column) {
-        LinearLayout hero = vertical();
-        hero.setPadding(dp(20), dp(19), dp(17), dp(22));
-        hero.setBackground(shape(DARK, 24, 0));
-        TextView title = text("电影刮削器", 36, WHITE, true);
-        title.setLetterSpacing(-.03f);
-        add(hero, title, 0);
-        TextView subtitle = text("为 Kodi 下载电影资料、海报和中文字幕", 14, 0xffc5dbc9, false);
-        add(hero, subtitle, 7);
-        add(column, hero, 0);
+    private void addDivider(LinearLayout parent, int top) {
+        View divider = new View(this);
+        divider.setBackgroundColor(appearance.border);
+        LinearLayout.LayoutParams line = new LinearLayout.LayoutParams(-1, dp(1));
+        line.topMargin = dp(top);
+        parent.addView(divider, line);
     }
 
     private void addDirectory(LinearLayout column) {
         LinearLayout card = card(column);
-        add(card, text("电影搜索路径", 19, INK, true), 0);
-        folderName = text("", 14, MUTED, false);
+        add(card, text("电影搜索路径", 17, appearance.foreground, true), 0);
+        folderName = text("", 14, appearance.muted, false);
         folderName.setMaxLines(3);
         folderName.setTextIsSelectable(true);
         add(card, folderName, 7);
-        pickFolder = button("设置搜索路径", PALE, GREEN);
+        pickFolder = button("设置搜索路径", appearance.tint, appearance.accent);
         pickFolder.setOnClickListener(view -> chooseFolder());
         LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-2, dp(45));
         placement.topMargin = dp(11);
@@ -462,8 +531,8 @@ public final class MainActivity extends Activity {
     private void addConnection(LinearLayout column) {
         LinearLayout card = card(column);
         LinearLayout heading = horizontal();
-        heading.addView(text("TMDB 连接", 19, INK, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        apiState = text("", 12, MUTED, true);
+        heading.addView(text("TMDB 连接", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        apiState = text("", 12, appearance.muted, true);
         heading.addView(apiState);
         add(card, heading, 0);
         LinearLayout input = horizontal();
@@ -496,7 +565,7 @@ public final class MainActivity extends Activity {
             }
         });
         input.addView(credential, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        showCredential = button("显示", PALE, GREEN);
+        showCredential = button("显示", appearance.tint, appearance.accent);
         showCredential.setOnClickListener(view -> {
             boolean concealed = credential.getTransformationMethod() instanceof PasswordTransformationMethod;
             credential.setTransformationMethod(concealed ? null : PasswordTransformationMethod.getInstance());
@@ -507,12 +576,12 @@ public final class MainActivity extends Activity {
         showPlacement.leftMargin = dp(7);
         input.addView(showCredential, showPlacement);
         add(card, input, 11);
-        validate = button("测试 TMDB 连接", PALE, GREEN);
+        validate = button("测试 TMDB 连接", appearance.tint, appearance.accent);
         validate.setOnClickListener(view -> validateApi());
         LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-2, dp(44));
         placement.topMargin = dp(10);
         card.addView(validate, placement);
-        diagnosticReport = text("", 13, INK, false);
+        diagnosticReport = text("", 13, appearance.foreground, false);
         diagnosticReport.setTextIsSelectable(true);
         diagnosticReport.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         diagnosticReport.setLineSpacing(dp(3), 1f);
@@ -522,21 +591,21 @@ public final class MainActivity extends Activity {
 
     private void addSubtitles(LinearLayout column) {
         LinearLayout card = card(column);
-        add(card, text("中文字幕", 19, INK, true), 0);
+        add(card, text("中文字幕", 17, appearance.foreground, true), 0);
         autoSubtitles = option("随一键刮削和手动匹配下载", settings.getBoolean("auto_subtitles", false));
         add(card, autoSubtitles, 4);
-        add(card, text("字幕保存到影片的 Subs 文件夹。射手影音无需密钥。", 13, MUTED, false), 0);
+        add(card, text("字幕保存到影片的 Subs 文件夹。射手影音无需密钥。", 13, appearance.muted, false), 0);
         LinearLayout buttons = horizontal();
-        subtitleSettings = button("设置字幕来源", PALE, GREEN);
+        subtitleSettings = button("设置字幕来源", appearance.tint, appearance.accent);
         subtitleSettings.setOnClickListener(view -> showSubtitleSettings());
         buttons.addView(subtitleSettings, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        subtitlesOnly = button("仅下载字幕", PALE, GREEN);
+        subtitlesOnly = button("仅下载字幕", appearance.tint, appearance.accent);
         subtitlesOnly.setOnClickListener(view -> runSubtitleBatch());
         LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(0, dp(44), 1f);
         placement.leftMargin = dp(8);
         buttons.addView(subtitlesOnly, placement);
         add(card, buttons, 9);
-        testAssrt = button("测试伪射手连接", PALE, GREEN);
+        testAssrt = button("测试伪射手连接", appearance.tint, appearance.accent);
         testAssrt.setOnClickListener(view -> validateAssrt());
         add(card, testAssrt, 8);
     }
@@ -544,7 +613,7 @@ public final class MainActivity extends Activity {
     private void showSubtitleSettings() {
         LinearLayout content = dialogContent();
         add(content, text("优先用射手影音按视频指纹匹配，无需密钥。填写下列任一凭据可增加搜索范围。",
-                14, MUTED, false), 0);
+                14, appearance.muted, false), 0);
         int passwordType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
         EditText assrt = field("伪射手 API Token（选填）", passwordType);
         assrt.setText(savedAssrtToken);
@@ -552,7 +621,7 @@ public final class MainActivity extends Activity {
         EditText subdl = field("SubDL API Key（选填）", passwordType);
         subdl.setText(savedSubdlKey);
         add(content, subdl, 8);
-        TextView sources = text("", 13, MUTED, false);
+        TextView sources = text("", 13, appearance.muted, false);
         sources.setAutoLinkMask(Linkify.WEB_URLS);
         sources.setText("字幕服务由 https://www.shooter.cn、https://assrt.net 和 https://subdl.com 提供。");
         add(content, sources, 10);
@@ -588,9 +657,9 @@ public final class MainActivity extends Activity {
 
     private void addOptions(LinearLayout column) {
         LinearLayout card = card(column);
-        add(card, text("刮削设置", 19, INK, true), 0);
+        add(card, text("刮削设置", 17, appearance.foreground, true), 0);
         LinearLayout row = horizontal();
-        row.addView(text("资料语言", 14, INK, false), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(text("资料语言", 14, appearance.foreground, false), new LinearLayout.LayoutParams(0, -2, 1f));
         language = new Spinner(this, Spinner.MODE_DROPDOWN);
         language.setContentDescription("选择资料语言");
         ArrayAdapter<String> choices = new ArrayAdapter<>(this,
@@ -614,18 +683,18 @@ public final class MainActivity extends Activity {
         add(card, alternateFanart, 0);
         overwrite = option("更新已有 NFO 和图片", settings.getBoolean("overwrite", false));
         add(card, overwrite, 0);
-        add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, MUTED, false), 2);
+        add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, appearance.muted, false), 2);
 
-        add(card, text("Kodi 合集资料目录", 14, INK, true), 12);
-        collectionFolderName = text("", 13, MUTED, false);
+        add(card, text("Kodi 合集资料目录", 14, appearance.foreground, true), 12);
+        collectionFolderName = text("", 13, appearance.muted, false);
         collectionFolderName.setMaxLines(3);
         collectionFolderName.setTextIsSelectable(true);
         add(card, collectionFolderName, 4);
         LinearLayout folderButtons = horizontal();
-        pickCollectionFolder = button("选择合集目录", PALE, GREEN);
+        pickCollectionFolder = button("选择合集目录", appearance.tint, appearance.accent);
         pickCollectionFolder.setOnClickListener(view -> chooseDirectory(PICK_COLLECTION_FOLDER, collectionFolder));
         folderButtons.addView(pickCollectionFolder, new LinearLayout.LayoutParams(-2, dp(42)));
-        clearCollectionFolder = button("取消选择", PALE, GREEN);
+        clearCollectionFolder = button("取消选择", appearance.tint, appearance.accent);
         clearCollectionFolder.setOnClickListener(view -> clearCollectionFolder());
         LinearLayout.LayoutParams clearPlacement = new LinearLayout.LayoutParams(-2, dp(42));
         clearPlacement.leftMargin = dp(8);
@@ -634,12 +703,20 @@ public final class MainActivity extends Activity {
     }
 
     private void addControls(LinearLayout stack) {
-        LinearLayout actions = vertical();
-        actions.setBackgroundColor(PAPER);
-        actions.setPadding(dp(18), dp(7), dp(18), dp(10));
-        stack.addView(actions, new LinearLayout.LayoutParams(-1, -2));
-        start = button("一键刮削", GREEN, WHITE);
-        start.setTextSize(17);
+        LinearLayout actionBar = vertical();
+        actionBar.setBackgroundColor(appearance.surface);
+        stack.addView(actionBar, new LinearLayout.LayoutParams(-1, -2));
+        addDivider(actionBar, 0);
+        LinearLayout actions = horizontal();
+        actions.setPadding(dp(16), dp(10), dp(16), dp(10));
+        actionBar.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        manual = button("手动匹配影片", appearance.tint, appearance.accent);
+        manual.setMinHeight(dp(52));
+        manual.setOnClickListener(view -> openManual());
+        actions.addView(manual, new LinearLayout.LayoutParams(0, -2, 1f));
+        start = button("一键刮削", appearance.primary, appearance.onPrimary);
+        start.setTextSize(16);
+        start.setMinHeight(dp(52));
         start.setOnClickListener(view -> {
             if (busy) {
                 cancelWork();
@@ -647,30 +724,27 @@ public final class MainActivity extends Activity {
                 runBatch();
             }
         });
-        actions.addView(start, new LinearLayout.LayoutParams(-1, dp(54)));
-        manual = button("手动匹配影片", PALE, GREEN);
-        manual.setOnClickListener(view -> openManual());
-        LinearLayout.LayoutParams manualPlacement = new LinearLayout.LayoutParams(-1, dp(48));
-        manualPlacement.topMargin = dp(7);
-        actions.addView(manual, manualPlacement);
+        LinearLayout.LayoutParams primarySpace = new LinearLayout.LayoutParams(0, -2, 1.25f);
+        primarySpace.leftMargin = dp(10);
+        actions.addView(start, primarySpace);
     }
 
     private void addLog(LinearLayout column) {
         LinearLayout card = card(column);
         logPanel = card;
-        add(card, text("刮削记录", 19, INK, true), 0);
-        runState = text("等待开始", 14, MUTED, true);
+        add(card, text("刮削记录", 17, appearance.foreground, true), 0);
+        runState = text("等待开始", 14, appearance.muted, true);
         runState.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(card, runState, 7);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        progress.setProgressTintList(ColorStateList.valueOf(GREEN));
-        progress.setIndeterminateTintList(ColorStateList.valueOf(GREEN));
+        progress.setProgressTintList(ColorStateList.valueOf(appearance.accent));
+        progress.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
         progress.setMax(100);
         LinearLayout.LayoutParams bar = new LinearLayout.LayoutParams(-1, dp(8));
         bar.topMargin = dp(6);
         card.addView(progress, bar);
         progress.setVisibility(View.GONE);
-        log = text("", 13, INK, false);
+        log = text("", 13, appearance.foreground, false);
         log.setTextIsSelectable(true);
         log.setLineSpacing(dp(4), 1f);
         add(card, log, 7);
@@ -1068,7 +1142,7 @@ public final class MainActivity extends Activity {
 
     private void showQuery(MovieStorage.Movie movie, String currentTitle, int currentYear) {
         LinearLayout form = dialogContent();
-        TextView source = text(movie.relativePath, 13, MUTED, false);
+        TextView source = text(movie.relativePath, 13, appearance.muted, false);
         add(form, source, 0);
         EditText title = field("电影片名、tmdb:123 或 IMDb ID", InputType.TYPE_CLASS_TEXT);
         title.setSingleLine(true);
@@ -1402,9 +1476,11 @@ public final class MainActivity extends Activity {
         language.setEnabled(!busy);
         start.setEnabled(!busy || !stopped);
         start.setText(!busy ? "一键刮削" : stopped ? "正在停止…" : "停止任务");
-        manual.setText(needsReview.isEmpty() ? "手动匹配影片" : "手动匹配影片 · " + needsReview.size() + " 部待确认");
+        manual.setText(needsReview.isEmpty() ? "手动匹配影片" : "手动匹配 · " + needsReview.size());
+        manual.setContentDescription(needsReview.isEmpty() ? "手动匹配影片"
+                : "手动匹配影片 · " + needsReview.size() + " 部待确认");
         apiState.setText(apiVerified ? "连接正常" : credential.length() > 0 ? "已输入" : "未设置");
-        apiState.setTextColor(apiVerified ? GREEN : MUTED);
+        apiState.setTextColor(apiVerified ? appearance.accent : appearance.muted);
     }
 
     private void note(String message) {
@@ -1428,10 +1504,10 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.5.0", 19, INK, true), 0);
+        add(info, text("Kodi 电影刮削器 1.6.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
-                + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, MUTED, false), 12);
+                + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.tmdb_logo);
         logo.setContentDescription("The Movie Database");
@@ -1439,7 +1515,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams logoSpace = new LinearLayout.LayoutParams(dp(157), dp(28));
         logoSpace.topMargin = dp(18);
         info.addView(logo, logoSpace);
-        add(info, text("This product uses the TMDB API but is not endorsed or certified by TMDB.", 13, MUTED, false), 5);
+        add(info, text("This product uses the TMDB API but is not endorsed or certified by TMDB.", 13, appearance.muted, false), 5);
         new AlertDialog.Builder(this).setTitle("关于").setView(info).setPositiveButton("关闭", null).show();
     }
 
@@ -1516,9 +1592,9 @@ public final class MainActivity extends Activity {
 
     private LinearLayout card(LinearLayout column) {
         LinearLayout panel = vertical();
-        panel.setPadding(dp(16), dp(14), dp(16), dp(13));
-        panel.setBackground(shape(CARD, 18, EDGE));
-        add(column, panel, 10);
+        panel.setPadding(dp(16), dp(14), dp(16), dp(14));
+        panel.setBackground(shape(appearance.surface, 14, appearance.border));
+        add(column, panel, 12);
         return panel;
     }
 
@@ -1554,13 +1630,13 @@ public final class MainActivity extends Activity {
 
     EditText field(String hint, int type) {
         EditText input = new EditText(this);
-        input.setTextColor(INK);
-        input.setHintTextColor(MUTED);
+        input.setTextColor(appearance.foreground);
+        input.setHintTextColor(appearance.muted);
         input.setTextSize(14);
         input.setInputType(type);
         input.setHint(hint);
         input.setPadding(dp(12), dp(8), dp(12), dp(8));
-        input.setBackground(shape(PAPER, 10, EDGE));
+        input.setBackground(shape(appearance.background, 10, appearance.border));
         return input;
     }
 
@@ -1577,8 +1653,9 @@ public final class MainActivity extends Activity {
         button.setStateListAnimator(null);
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         button.setTextColor(new ColorStateList(new int[][] {{-android.R.attr.state_enabled}, {}},
-                new int[] {0xff74877a, foreground}));
-        RippleDrawable background = new RippleDrawable(ColorStateList.valueOf(0x290e291b), shape(fill, 12, 0), null);
+                new int[] {appearance.disabled, foreground}));
+        int ripple = fill == appearance.primary ? 0x26000000 | (foreground & 0x00ffffff) : appearance.ripple;
+        RippleDrawable background = new RippleDrawable(ColorStateList.valueOf(ripple), shape(fill, 10, 0), null);
         button.setBackground(background);
         return button;
     }
@@ -1586,7 +1663,7 @@ public final class MainActivity extends Activity {
     private Switch option(String description, boolean value) {
         Switch toggle = new Switch(this);
         toggle.setText(description);
-        toggle.setTextColor(INK);
+        toggle.setTextColor(appearance.foreground);
         toggle.setTextSize(14);
         toggle.setMinHeight(dp(43));
         toggle.setSwitchPadding(dp(12));
