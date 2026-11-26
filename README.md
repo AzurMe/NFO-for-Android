@@ -26,6 +26,8 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 2. **伪射手**可在 **设置字幕来源** 中填写用户面板提供的 API Token。字幕服务由 ASSRT 提供。[ASSRT](https://assrt.net/) · [API 文档](https://secure.assrt.net/api/doc)
 3. **SubDL**可填写自己的 API Key，按电影 ID 或片名及年份查找简体和繁体字幕。[SubDL](https://subdl.com/) · [API 文档](https://subdl.com/developers)
 
+出现网络报错时，可以在 **中文字幕** 区点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索或获取详情时遇到连接重置、超时或解析失败，应用会尝试另一条 HTTPS 线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
+
 支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。已有文件会保留，重复内容会跳过。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
 
 ## 文件命名和输出
@@ -69,6 +71,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.3.2](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.3.2)
+
+- 伪射手 API 连接中断时自动尝试官方 HTTPS 备用域名，并在日志中区分搜索、获取详情和文件下载的失败。
+- 新增「测试伪射手连接」，可分别检查两条 API 线路和 Token。
+- 修复「仅下载字幕」对 `Dune.Part.One.2021` 一类别名的匹配，按已知年份补查 `Dune`。
 
 ### [v1.3.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.3.1)
 

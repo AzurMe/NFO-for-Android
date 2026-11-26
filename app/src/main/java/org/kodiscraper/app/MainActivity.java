@@ -99,6 +99,7 @@ public final class MainActivity extends Activity {
     private Button showCredential;
     private Button subtitleSettings;
     private Button subtitlesOnly;
+    private Button testAssrt;
     private EditText credential;
     private Spinner language;
     private Switch overwrite;
@@ -307,6 +308,9 @@ public final class MainActivity extends Activity {
         placement.leftMargin = dp(8);
         buttons.addView(subtitlesOnly, placement);
         add(card, buttons, 9);
+        testAssrt = button("测试伪射手连接", PALE, GREEN);
+        testAssrt.setOnClickListener(view -> validateAssrt());
+        add(card, testAssrt, 8);
     }
 
     private void showSubtitleSettings() {
@@ -567,6 +571,17 @@ public final class MainActivity extends Activity {
                 runState.setText("TMDB 连接检测完成");
                 note(summary);
                 updateUi();
+            };
+        });
+    }
+
+    private void validateAssrt() {
+        AssrtSubtitleSource source = new AssrtSubtitleSource(savedAssrtToken);
+        begin(null, "正在检测伪射手连接…", () -> {
+            String report = source.diagnose();
+            return () -> {
+                runState.setText("伪射手连接检测完成");
+                note(report);
             };
         });
     }
@@ -1139,6 +1154,7 @@ public final class MainActivity extends Activity {
         showCredential.setEnabled(!busy);
         subtitleSettings.setEnabled(!busy);
         subtitlesOnly.setEnabled(!busy);
+        testAssrt.setEnabled(!busy);
         autoSubtitles.setEnabled(!busy);
         actors.setEnabled(!busy);
         alternateFanart.setEnabled(!busy);
@@ -1175,7 +1191,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.3.1", 19, INK, true), 0);
+        add(info, text("Kodi 电影刮削器 1.3.2", 19, INK, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, MUTED, false), 12);

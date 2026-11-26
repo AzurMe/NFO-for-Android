@@ -4,12 +4,17 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLEncoder;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Locale;
@@ -67,8 +72,9 @@ final class SubtitleHttp {
             if (!allowed(target, domains)) {
                 throw new IOException("字幕下载地址超出来源允许范围");
             }
-            HttpURLConnection connection = (HttpURLConnection) target.toURL().openConnection();
+            HttpURLConnection connection = null;
             try {
+                connection = (HttpURLConnection) target.toURL().openConnection();
                 synchronized (ACTIVE) {
                     ScrapeEngine.checkCancelled();
                     ACTIVE.put(worker, connection);
@@ -76,7 +82,7 @@ final class SubtitleHttp {
                 connection.setConnectTimeout(10_000);
                 connection.setReadTimeout(15_000);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.3.1");
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.3.2");
                 if (header != null) {
                     connection.setRequestProperty(header, credential);
                 }
@@ -111,19 +117,23 @@ final class SubtitleHttp {
                 try (InputStream input = connection.getInputStream()) {
                     return read(input, limit);
                 }
-            } catch (HttpException failure) {
-                throw failure;
-            } catch (java.net.SocketTimeoutException failure) {
-                throw new IOException("字幕连接超时", failure);
-            } catch (java.net.UnknownHostException failure) {
-                throw new IOException("无法解析字幕服务器地址", failure);
+            } catch (SocketTimeoutException failure) {
+                throw new ConnectionException("字幕连接超时", failure);
+            } catch (UnknownHostException failure) {
+                throw new ConnectionException("无法解析字幕服务器地址", failure);
+            } catch (SocketException | EOFException failure) {
+                ScrapeEngine.checkCancelled();
+                throw new ConnectionException(failure instanceof ConnectException
+                        ? "无法建立字幕连接" : "字幕连接被重置或提前断开", failure);
             } catch (javax.net.ssl.SSLException failure) {
                 throw new IOException("字幕服务器的 HTTPS 连接失败", failure);
             } finally {
                 synchronized (ACTIVE) {
                     ACTIVE.remove(worker);
                 }
-                connection.disconnect();
+                if (connection != null) {
+                    connection.disconnect();
+                }
             }
         }
         throw new IOException("字幕服务跳转次数过多");
@@ -183,6 +193,12 @@ final class SubtitleHttp {
             super("字幕服务返回 HTTP " + statusCode);
             this.statusCode = statusCode;
             this.apiStatus = apiStatus;
+        }
+    }
+
+    static final class ConnectionException extends IOException {
+        ConnectionException(String message, IOException cause) {
+            super(message, cause);
         }
     }
 }

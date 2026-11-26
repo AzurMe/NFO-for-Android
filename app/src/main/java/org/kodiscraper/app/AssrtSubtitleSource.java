@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 
 final class AssrtSubtitleSource implements SubtitleSource {
     private static final String API_HOST = "api.assrt.net";
-    private static final String API = "https://" + API_HOST + "/v1/sub/";
+    private static final String BACKUP_API_HOST = "api.makedie.me";
     private static final long API_INTERVAL_NANOS = 3_050_000_000L;
     private static final int MAX_SEARCHES = 3;
     private static final int MAX_DETAILS = 5;
@@ -59,6 +59,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
     };
 
     private final String token;
+    private String activeApiHost = API_HOST;
     private long lastApiStarted;
     private boolean hasMadeApiRequest;
 
@@ -80,7 +81,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
             checkRunning();
             String url = "search?q=" + SubtitleHttp.encode(search.text) + "&cnt=12&filelist=1";
             if (search.filename) url += "&is_file=1";
-            JSONArray entries = apiResults(url);
+            JSONArray entries = apiResults(url, "搜索");
             searches++;
             for (int i = 0; i < entries.length(); i++) {
                 JSONObject entry = entries.optJSONObject(i);
@@ -109,14 +110,14 @@ final class AssrtSubtitleSource implements SubtitleSource {
         List<SubtitleFiles.Track> tracks = new ArrayList<>();
         List<byte[]> contents = new ArrayList<>();
         Set<String> usedLinks = new HashSet<>();
-        boolean downloadFailed = false;
+        IOException downloadFailure = null;
         int downloads = 0;
         for (int i = 0; i < Math.min(MAX_DETAILS, ranked.size()); i++) {
             checkRunning();
             Hit hit = ranked.get(i);
             JSONArray entries;
             try {
-                entries = apiResults("detail?id=" + hit.id);
+                entries = apiResults("detail?id=" + hit.id, "获取字幕详情");
             } catch (IOException problem) {
                 checkRunning();
                 if (!tracks.isEmpty()) return tracks;
@@ -136,23 +137,36 @@ final class AssrtSubtitleSource implements SubtitleSource {
                 if (!usedLinks.add(file.url)) continue;
                 downloads++;
                 try {
-                    byte[] bytes = SubtitleHttp.get(file.url, null, null, SubtitleFiles.MAX_BYTES,
-                            "assrt.net", "makedie.me");
+                    byte[] bytes = downloadFile(file.url);
                     if (contents.stream().anyMatch(existing -> Arrays.equals(existing, bytes))) continue;
                     SubtitleFiles.Track track = SubtitleFiles.validate(file.name, bytes);
                     tracks.add(track);
                     contents.add(bytes);
                 } catch (IOException problem) {
                     checkRunning();
-                    downloadFailed = true;
+                    if (downloadFailure == null || problem instanceof SubtitleHttp.ConnectionException) {
+                        downloadFailure = problem;
+                    }
                 }
             }
             if (tracks.size() >= MAX_TRACKS || downloads >= MAX_DOWNLOADS) break;
         }
-        if (tracks.isEmpty() && downloadFailed) {
-            throw new IOException("伪射手的字幕文件下载或格式校验失败");
+        if (tracks.isEmpty() && downloadFailure != null) {
+            String reason = downloadFailure instanceof SubtitleHttp.ConnectionException
+                    || downloadFailure instanceof SubtitleHttp.HttpException
+                    ? downloadFailure.getMessage() : "无法读取或校验字幕文件";
+            throw new IOException("字幕文件下载失败 · " + reason, downloadFailure);
         }
         return tracks;
+    }
+
+    private static byte[] downloadFile(String url) throws IOException {
+        try {
+            return SubtitleHttp.get(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
+        } catch (SubtitleHttp.ConnectionException interrupted) {
+            checkRunning();
+            return SubtitleHttp.get(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
+        }
     }
 
     private static List<Search> searchQueries(SubtitleQuery query, MatchContext context) {
@@ -179,36 +193,118 @@ final class AssrtSubtitleSource implements SubtitleSource {
         }
     }
 
-    private JSONArray apiResults(String path) throws IOException {
-        waitForQuota();
+    private JSONArray apiResults(String path, String step) throws IOException {
         JSONObject response;
         try {
-            response = SubtitleHttp.json(API + path, "Authorization", "Bearer " + token, API_HOST);
+            response = requestWithFallback("sub/" + path);
         } catch (SubtitleHttp.HttpException error) {
             if (error.apiStatus == 101 || error.apiStatus == 20900) return new JSONArray();
-            throw apiError(error.apiStatus, error.statusCode);
+            throw new IOException(step + "失败 · " + apiErrorMessage(error.apiStatus, error.statusCode), error);
+        } catch (IOException error) {
+            checkRunning();
+            throw new IOException(step + "失败 · " + error.getMessage(), error);
         }
         int status = response.optInt("status", -1);
         if (status == 101 || status == 20900) return new JSONArray();
-        if (status != 0) throw apiError(status, 200);
+        if (status != 0) throw new IOException(step + "失败 · " + apiErrorMessage(status, 200));
         JSONObject result = response.optJSONObject("sub");
         JSONArray entries = result == null ? null : result.optJSONArray("subs");
         return entries == null ? new JSONArray() : entries;
     }
 
-    private static IOException apiError(int status, int httpStatus) {
-        if (status == 30900 || httpStatus == 429) {
-            return new IOException("伪射手请求达到配额，请稍后再试");
+    private JSONObject requestWithFallback(String path) throws IOException {
+        String firstHost = activeApiHost;
+        try {
+            return requestApi(firstHost, path, token);
+        } catch (IOException firstError) {
+            checkRunning();
+            if (!canFailOver(firstError)) {
+                throw firstError;
+            }
+            String secondHost = firstHost.equals(API_HOST) ? BACKUP_API_HOST : API_HOST;
+            try {
+                JSONObject result = requestApi(secondHost, path, token);
+                activeApiHost = secondHost;
+                return result;
+            } catch (IOException secondError) {
+                checkRunning();
+                if (secondError instanceof SubtitleHttp.HttpException && !canFailOver(secondError)) {
+                    throw secondError;
+                }
+                throw new IOException(firstHost + " · " + firstError.getMessage() + "；"
+                        + secondHost + " · " + secondError.getMessage(), secondError);
+            }
         }
-        if (status == 20001 || status == 1 || httpStatus == 401 || httpStatus == 403) {
-            return new IOException("伪射手 Token 验证失败");
+    }
+
+    private static boolean canFailOver(IOException failure) {
+        if (failure instanceof SubtitleHttp.ConnectionException) {
+            return true;
+        }
+        if (failure instanceof SubtitleHttp.HttpException) {
+            SubtitleHttp.HttpException response = (SubtitleHttp.HttpException) failure;
+            return response.apiStatus < 0
+                    && (response.statusCode == 502 || response.statusCode == 503 || response.statusCode == 504);
+        }
+        return false;
+    }
+
+    private JSONObject requestApi(String host, String path, String credential) throws IOException {
+        waitForQuota();
+        String bearer = credential.isEmpty() ? null : "Bearer " + credential;
+        return SubtitleHttp.json("https://" + host + "/v1/" + path,
+                bearer == null ? null : "Authorization", bearer, host);
+    }
+
+    String diagnose() throws IOException {
+        String credential = TOKEN.matcher(token).matches() ? token : "";
+        String heading = "伪射手 API · " + (credential.isEmpty()
+                ? token.isEmpty() ? "未填写 Token" : "Token 格式无效"
+                : "检测 Token");
+        return heading + "\n" + probeHost(API_HOST, credential) + "\n" + probeHost(BACKUP_API_HOST, credential);
+    }
+
+    private String probeHost(String host, String credential) throws IOException {
+        String result;
+        try {
+            JSONObject response = requestApi(host, "user/quota", credential);
+            result = probeResult(response.optInt("status", -1), 200, credential);
+        } catch (SubtitleHttp.HttpException error) {
+            result = probeResult(error.apiStatus, error.statusCode, credential);
+        } catch (IOException error) {
+            checkRunning();
+            result = error.getMessage();
+        }
+        return host + " · " + result;
+    }
+
+    private static String probeResult(int status, int httpStatus, String credential) {
+        String result;
+        if (status == 0) {
+            result = credential.isEmpty() ? "已连通" : "已连通，Token 有效";
+        } else if (credential.isEmpty() && (status == 20001 || httpStatus == 401)) {
+            result = "已连通，等待填写 Token";
+        } else {
+            result = apiErrorMessage(status, httpStatus);
+        }
+        return result + " · HTTP " + httpStatus;
+    }
+
+    private static String apiErrorMessage(int status, int httpStatus) {
+        if (status == 30900 || httpStatus == 429) {
+            return "请求达到配额，请稍后再试";
+        }
+        if (status == 20001 || status == 1 || httpStatus == 401) {
+            return "Token 验证失败";
+        }
+        if (httpStatus == 403) {
+            return "服务器拒绝访问";
         }
         if (status >= 30000 || httpStatus >= 500) {
-            return new IOException("伪射手服务暂时不可用（HTTP " + httpStatus + "）");
+            return "服务暂时不可用（HTTP " + httpStatus + "）";
         }
-        if (status == -1 && httpStatus == 200) return new IOException("伪射手返回了无法识别的数据");
-        return new IOException("伪射手 API 请求失败（HTTP " + httpStatus
-                + (status > 0 ? "，状态 " + status : "") + "）");
+        if (status == -1 && httpStatus == 200) return "返回了无法识别的数据";
+        return "API 请求失败（HTTP " + httpStatus + (status > 0 ? "，状态 " + status : "") + "）";
     }
 
     private void waitForQuota() throws InterruptedIOException {
