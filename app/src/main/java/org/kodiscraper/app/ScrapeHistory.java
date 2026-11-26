@@ -43,7 +43,8 @@ final class ScrapeHistory {
                 entries.remove(LIMIT - 1);
             }
             entries.add(0, limitLength(message));
-            preferences.edit().putString(KEY, new JSONArray(entries).toString()).apply();
+            // Finish the write before showing the entry so it survives immediate process termination.
+            preferences.edit().putString(KEY, new JSONArray(entries).toString()).commit();
             return entries;
         }
     }
