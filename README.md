@@ -38,7 +38,7 @@ Movies/
 - **NFO** 可包含片名和原名、剧情、上映日期、片长、评分与票数、类型、分级、制作公司、合集、导演、编剧、演员及角色、TMDB 和 IMDb 编号以及预告片。发现本地预告片时优先使用本地文件。音视频轨道和 HDR 等媒体旗标由 Kodi 读取实际视频文件。
 - **影片图片**按 TMDB 的素材情况生成，包括海报、背景图、透明标志、横图和无字海报。开启本地演员头像后，每部电影最多下载 20 张头像。NFO 还会记录 TMDB 提供的其他演员资料和可用头像地址。
 - **旧版文件名**在单片文件夹内支持 `movie.nfo`。更新时以视频同名的 NFO 为主，已经存在的旧文件名也会同步。分段电影同样会同步已经存在的首段 NFO。
-- **备用背景图**可在设置中启用。每部电影最多下载 3 张，命名为 `feature-cut-fanart1.jpg`、`feature-cut-fanart2.jpg` 等。
+- **备用背景图**可在设置中启用。每部电影最多下载 3 张，命名为 `feature-cut-fanart1.jpg`、`feature-cut-fanart2.jpg` 等。显示多张背景图需要 Kodi 皮肤支持。[Kodi 图片类型](https://kodi.wiki/view/Artwork_types#fanart.23)
 - **合集图片**可选择 Kodi 的合集资料目录。Kodi 和本应用需指向同一个目录。应用在目录内按 NFO 中的合集名称创建子目录，并补齐可用的 `poster.jpg` 和 `fanart.jpg`。[Kodi 合集资料目录](https://kodi.wiki/view/Movie_set_information_folder)
 
 ## 在 Kodi 中导入
@@ -47,7 +47,7 @@ Movies/
 2. 如果一部电影一个文件夹，启用 **电影位于与电影名匹配的独立文件夹**。
 3. 更新资料库导入新影片。已有影片可在影片信息页点 **刷新**。如果 Kodi 询问是否忽略本地信息，选择 **否**。
 4. 如需显示本地演员头像，开启 Kodi 的 **下载演员缩略图**。如需显示透明标志、横图等额外图片，可把影片图片级别设为 **最大**或自定义。
-5. 如需 Kodi 读取分辨率、音轨和 HDR 等媒体信息，开启视频设置中的 **提取媒体旗标**。[Kodi 视频设置](https://kodi.wiki/view/Settings/Media/Videos)
+5. 如需 Kodi 读取分辨率、音轨和 HDR 等媒体信息，开启视频设置中的 **从文件中提取视频信息**。[Kodi 视频设置](https://kodi.wiki/view/Settings/Media/Videos)
 
 Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。需要把这些状态写回电影目录时，在 Kodi 中将视频资料库设为 **导出到单独文件**，并按需选择覆盖旧文件。刮削器更新时可保留已写入 NFO 的字段。[Kodi 视频资料库导入与导出](https://kodi.wiki/view/Import-export_library/Video)
 

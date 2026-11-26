@@ -428,7 +428,13 @@ public final class MovieStorage {
     }
 
     private void load(Directory directory) throws IOException {
-        checkCancelled();
+        directory.replaceChildren(queryChildren(directory, true));
+    }
+
+    private Map<String, Entry> queryChildren(Directory directory, boolean cancellable) throws IOException {
+        if (cancellable) {
+            checkCancelled();
+        }
         Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, directory.documentId);
         Map<String, Entry> entries = new LinkedHashMap<>();
         try (Cursor cursor = resolver.query(childrenUri, DOCUMENT_COLUMNS, null, null, null)) {
@@ -436,7 +442,9 @@ public final class MovieStorage {
                 throw new IOException("无法读取所选文件夹 " + directory.relativePath);
             }
             while (cursor.moveToNext()) {
-                checkCancelled();
+                if (cancellable) {
+                    checkCancelled();
+                }
                 String documentId = cursor.getString(0);
                 String name = cursor.getString(1);
                 String mime = cursor.getString(2);
@@ -449,7 +457,7 @@ public final class MovieStorage {
         } catch (RuntimeException e) {
             throw new IOException("无法读取所选文件夹 " + directory.relativePath, e);
         }
-        directory.replaceChildren(entries);
+        return entries;
     }
 
     private static Entry entry(Directory parent, Uri uri, String documentId, String name, String mime) {
@@ -503,31 +511,57 @@ public final class MovieStorage {
     }
 
     private Entry rename(Directory parent, Entry entry, String newName) throws IOException {
-        Uri renamed;
+        return rename(parent, entry, newName, true);
+    }
+
+    private Entry rename(Directory parent, Entry entry, String newName, boolean restoreIfRenamedDifferently)
+            throws IOException {
+        Uri renamed = null;
+        Entry moved = null;
+        IOException failure;
         try {
             renamed = DocumentsContract.renameDocument(resolver, entry.uri, newName);
-        } catch (RuntimeException e) {
-            throw new IOException("存储提供方无法重命名 " + entry.displayName, e);
-        }
-        if (renamed == null) {
-            throw new IOException("存储提供方无法重命名 " + entry.displayName);
-        }
-        try {
-            Entry moved = stat(parent, renamed);
-            if (!newName.equals(moved.displayName)) {
-                throw new IOException("存储提供方无法使用指定名称 " + newName);
-            }
-            return moved;
-        } catch (IOException e) {
-            try {
-                if (DocumentsContract.renameDocument(resolver, renamed, entry.displayName) == null) {
-                    e.addSuppressed(new IOException("无法恢复 " + entry.displayName));
+            if (renamed != null) {
+                moved = stat(parent, renamed);
+                if (newName.equals(moved.displayName)) {
+                    return moved;
                 }
-            } catch (RuntimeException restoreError) {
-                e.addSuppressed(restoreError);
             }
-            throw e;
+            failure = new IOException("存储提供方无法使用指定名称 " + newName);
+        } catch (IOException | RuntimeException cause) {
+            failure = new IOException("存储提供方无法重命名 " + entry.displayName, cause);
         }
+
+        if (moved == null) {
+            // Android 9 ExternalStorageProvider can move a file before it reports an error.
+            // Verify both names using the tree grant before deciding whether to commit or restore.
+            try {
+                Map<String, Entry> children = queryChildren(parent, false);
+                Entry target = children.get(newName);
+                if (target != null && !(target instanceof Directory) && !children.containsKey(entry.displayName)
+                        && (renamed == null || renamed.equals(target.uri))) {
+                    return target;
+                }
+                if (renamed != null) {
+                    for (Entry child : children.values()) {
+                        if (renamed.equals(child.uri)) {
+                            moved = child;
+                            break;
+                        }
+                    }
+                }
+            } catch (IOException inspectError) {
+                failure.addSuppressed(inspectError);
+            }
+        }
+        if (restoreIfRenamedDifferently && moved != null && !entry.displayName.equals(moved.displayName)) {
+            try {
+                parent.remember(rename(parent, moved, entry.displayName, false));
+            } catch (IOException restoreError) {
+                failure.addSuppressed(restoreError);
+            }
+        }
+        throw failure;
     }
 
     private void writeBytes(Entry entry, byte[] data) throws IOException {
