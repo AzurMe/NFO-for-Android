@@ -22,7 +22,6 @@ final class AppAppearance {
         }
     }
 
-    final boolean dark;
     final int background;
     final int surface;
     final int foreground;
@@ -37,8 +36,6 @@ final class AppAppearance {
     final int scrim;
 
     private AppAppearance(Context context) {
-        int nightMode = context.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        dark = nightMode == Configuration.UI_MODE_NIGHT_YES;
         background = context.getColor(R.color.appearance_background);
         surface = context.getColor(R.color.appearance_surface);
         foreground = context.getColor(R.color.appearance_foreground);

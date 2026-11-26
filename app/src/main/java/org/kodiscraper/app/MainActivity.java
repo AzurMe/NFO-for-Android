@@ -22,7 +22,6 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.window.OnBackInvokedCallback;
@@ -183,25 +182,12 @@ public final class MainActivity extends Activity {
 
     private void configureWindow() {
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        getWindow().setStatusBarColor(appearance.background);
-        getWindow().setNavigationBarColor(appearance.background);
         if (Build.VERSION.SDK_INT >= 29) {
             getWindow().setStatusBarContrastEnforced(false);
             getWindow().setNavigationBarContrastEnforced(false);
         }
         if (Build.VERSION.SDK_INT >= 30) {
             getWindow().setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = getWindow().getInsetsController();
-            if (controller != null) {
-                int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-                controller.setSystemBarsAppearance(appearance.dark ? 0 : lightBars, lightBars);
-            }
-        } else {
-            View decor = getWindow().getDecorView();
-            int lightBars = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
-            int flags = decor.getSystemUiVisibility() & ~lightBars;
-            decor.setSystemUiVisibility(appearance.dark ? flags : flags | lightBars);
         }
     }
 
