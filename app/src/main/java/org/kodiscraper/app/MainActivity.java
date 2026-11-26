@@ -174,7 +174,7 @@ public final class MainActivity extends Activity {
         hero.setBackground(shape(DARK, 24, 0));
         LinearLayout top = horizontal();
         ImageView icon = new ImageView(this);
-        icon.setImageResource(R.drawable.ic_launcher);
+        icon.setImageResource(R.mipmap.ic_launcher);
         top.addView(icon, new LinearLayout.LayoutParams(dp(37), dp(37)));
         TextView wordmark = text("KODI · 电影资料库", 12, LIME, true);
         wordmark.setLetterSpacing(.08f);
