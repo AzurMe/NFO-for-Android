@@ -22,6 +22,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
 import android.window.OnBackInvokedCallback;
@@ -213,6 +214,12 @@ public final class MainActivity extends Activity {
                 android.graphics.Insets safe = insets.getInsets(WindowInsets.Type.systemBars()
                         | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
                 view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+                WindowInsetsController controller = view.getWindowInsetsController();
+                if (controller != null) {
+                    int lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                            | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+                    controller.setSystemBarsAppearance(appearance.dark ? 0 : lightBars, lightBars);
+                }
             } else {
                 view.setPadding(0, 0, 0, 0);
             }
