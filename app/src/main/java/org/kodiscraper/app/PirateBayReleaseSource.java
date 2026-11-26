@@ -26,16 +26,19 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
 
 final class PirateBayReleaseSource {
-    private static final String HOST = "apibay.org";
+    static final String HOST = "apibay.org";
     private static final String MOVIE_CATEGORIES = "201,202,207,209,210,211";
     private static final int CONNECT_TIMEOUT_MS = 6_000;
     private static final int READ_TIMEOUT_MS = 9_000;
+    private static final int SEARCH_BUDGET_MS = 25_000;
+    private static final int MIN_REQUEST_BUDGET_MS = 1_000;
     private static final int RETRY_DELAY_MS = 250;
     private static final int MAX_TITLE_LENGTH = 180;
     private static final int MAX_NAME_LENGTH = 400;
@@ -137,26 +140,56 @@ final class PirateBayReleaseSource {
         }
 
         Map<String, Candidate> byHash = new HashMap<>();
+        String releaseYear = Integer.toString(year);
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(SEARCH_BUDGET_MS);
         boolean capped = false;
+        int pending = queries.size();
+        int completed = 0;
+        IOException firstFailure = null;
+        IOException hostFailure = null;
+        String retryQuery = null;
         for (String query : queries) {
             ScrapeEngine.checkCancelled();
-            String address = "https://" + HOST + "/q.php?q=" + SubtitleHttp.encode(query)
-                    + "&cat=" + SubtitleHttp.encode(MOVIE_CATEGORIES);
+            int budget = requestBudget(deadline, pending--);
+            if (budget < MIN_REQUEST_BUDGET_MS) break;
             try {
-                byte[] data = lookup(address);
-                ScrapeEngine.checkCancelled();
-                JSONArray rows = parseRows(new String(data, StandardCharsets.UTF_8));
-                capped |= rows.length() >= OBSERVED_RESULT_LIMIT;
-                collect(rows, titles.keySet(), String.valueOf(year), targetImdb, byHash);
+                capped |= collectQuery(query, true, budget, titles.keySet(), releaseYear, targetImdb, byHash);
+                completed++;
             } catch (IOException failure) {
                 ScrapeEngine.checkCancelled();
-                if (failure instanceof InterruptedIOException || byHash.isEmpty()) {
-                    throw failure;
+                if (failure instanceof InterruptedIOException) throw failure;
+                if (firstFailure == null) firstFailure = failure;
+                if (hostUnavailable(failure)) {
+                    hostFailure = failure;
+                    break;
                 }
-                return new SearchResult(sorted(byHash), true, capped);
+                if (retryQuery == null && transientFailure(failure)) retryQuery = query;
             }
         }
-        return new SearchResult(sorted(byHash), false, capped);
+        if (hostFailure == null && retryQuery != null
+                && requestBudget(deadline, 1) >= MIN_REQUEST_BUDGET_MS + RETRY_DELAY_MS) {
+            waitBeforeRetry();
+            int budget = requestBudget(deadline, 1);
+            if (budget >= MIN_REQUEST_BUDGET_MS) {
+                try {
+                    // The same endpoint also accepts a search without category parameters.
+                    // Local category and movie checks still apply to its response.
+                    capped |= collectQuery(retryQuery, false, budget, titles.keySet(), releaseYear,
+                            targetImdb, byHash);
+                    completed++;
+                } catch (IOException failure) {
+                    ScrapeEngine.checkCancelled();
+                    if (failure instanceof InterruptedIOException) throw failure;
+                    if (hostUnavailable(failure)) hostFailure = failure;
+                }
+            }
+        }
+        if (completed == 0) {
+            if (hostFailure != null) throw lookupError(hostFailure);
+            if (firstFailure != null) throw lookupError(firstFailure);
+            throw new IOException("查询 " + HOST + " 超时");
+        }
+        return new SearchResult(sorted(byHash), completed < queries.size(), capped);
     }
 
     private static void addTitle(Map<String, String> titles, String value) {
@@ -170,23 +203,49 @@ final class PirateBayReleaseSource {
         }
     }
 
-    private static byte[] lookup(String address) throws IOException {
-        for (int attempt = 0; ; attempt++) {
-            ScrapeEngine.checkCancelled();
-            try {
-                return SubtitleHttp.get(address, null, null, MAX_RESPONSE_BYTES, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, HOST);
-            } catch (IOException failure) {
-                ScrapeEngine.checkCancelled();
-                if (attempt != 0 || !SubtitleHttp.isRetryableConnection(failure)) {
-                    throw lookupError(failure);
-                }
-                try {
-                    Thread.sleep(RETRY_DELAY_MS);
-                } catch (InterruptedException cancelled) {
-                    Thread.currentThread().interrupt();
-                    throw new InterruptedIOException("操作已停止");
-                }
-            }
+    private static int requestBudget(long deadline, int pending) {
+        long remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+        return (int) Math.min(CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS, Math.max(0, remaining / pending));
+    }
+
+    private static boolean collectQuery(String query, boolean filtered, int budget,
+                                        Set<String> titles, String year, String imdbId,
+                                        Map<String, Candidate> byHash) throws IOException {
+        ScrapeEngine.checkCancelled();
+        String address = "https://" + HOST + "/q.php?q=" + SubtitleHttp.encode(query);
+        if (filtered) address += "&cat=" + SubtitleHttp.encode(MOVIE_CATEGORIES);
+        int connect = budget * CONNECT_TIMEOUT_MS / (CONNECT_TIMEOUT_MS + READ_TIMEOUT_MS);
+        byte[] data = SubtitleHttp.get(address, null, null, MAX_RESPONSE_BYTES, connect, budget - connect, HOST);
+        ScrapeEngine.checkCancelled();
+        JSONArray rows = parseRows(new String(data, StandardCharsets.UTF_8));
+        collect(rows, titles, year, imdbId, byHash, !filtered);
+        return rows.length() >= OBSERVED_RESULT_LIMIT;
+    }
+
+    private static boolean transientFailure(IOException failure) {
+        if (SubtitleHttp.isRetryableConnection(failure)) return true;
+        if (failure instanceof SubtitleHttp.HttpException response) {
+            return response.statusCode == 408 || response.statusCode == 502
+                    || response.statusCode == 503 || response.statusCode == 504;
+        }
+        return false;
+    }
+
+    private static boolean hostUnavailable(IOException failure) {
+        if (failure instanceof SubtitleHttp.HttpException response) {
+            return response.statusCode == 401 || response.statusCode == 403 || response.statusCode == 429;
+        }
+        return failure instanceof SSLException || failure.getCause() instanceof SSLException
+                || failure instanceof UnknownHostException || failure.getCause() instanceof UnknownHostException;
+    }
+
+    private static void waitBeforeRetry() throws InterruptedIOException {
+        ScrapeEngine.checkCancelled();
+        try {
+            Thread.sleep(RETRY_DELAY_MS);
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException("操作已停止");
         }
     }
 
@@ -221,7 +280,8 @@ final class PirateBayReleaseSource {
 
     static List<Candidate> parseCandidates(String response, String title, int year, String imdbId) throws IOException {
         Map<String, Candidate> byHash = new HashMap<>();
-        collect(parseRows(response), Collections.singleton(titleKey(title)), String.valueOf(year), imdb(imdbId), byHash);
+        collect(parseRows(response), Collections.singleton(titleKey(title)), String.valueOf(year), imdb(imdbId),
+                byHash, false);
         return sorted(byHash);
     }
 
@@ -234,14 +294,14 @@ final class PirateBayReleaseSource {
     }
 
     private static void collect(JSONArray rows, Set<String> targetTitles, String year, String imdbId,
-                                Map<String, Candidate> byHash) throws IOException {
+                                Map<String, Candidate> byHash, boolean requireCategory) throws IOException {
         for (int i = 0; i < Math.min(MAX_ROWS, rows.length()); i++) {
             ScrapeEngine.checkCancelled();
             JSONObject row = rows.optJSONObject(i);
             if (row == null) {
                 continue;
             }
-            Candidate candidate = candidate(row, targetTitles, year, imdbId);
+            Candidate candidate = candidate(row, targetTitles, year, imdbId, requireCategory);
             if (candidate != null) {
                 Candidate previous = byHash.get(candidate.infoHash);
                 if (previous == null || ORDER.compare(candidate, previous) < 0) {
@@ -257,11 +317,12 @@ final class PirateBayReleaseSource {
         return Collections.unmodifiableList(results);
     }
 
-    private static Candidate candidate(JSONObject row, Set<String> titles, String year, String imdbId) {
+    private static Candidate candidate(JSONObject row, Set<String> titles, String year, String imdbId,
+                                       boolean requireCategory) {
         String name = row.optString("name", "").trim();
         String category = row.optString("category", "").trim();
         if (name.isEmpty() || name.length() > MAX_NAME_LENGTH || !visibleText(name)
-                || (!category.isEmpty() && !CATEGORIES.contains(category))) {
+                || ((requireCategory || !category.isEmpty()) && !CATEGORIES.contains(category))) {
             return null;
         }
         String recordImdb = imdb(row.optString("imdb", ""));

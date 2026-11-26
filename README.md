@@ -10,7 +10,7 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。应用沿用已配置的 TMDB 凭据取得近 30 天影片及其海报、简介和类型标签。点 **影片详情** 可以展开简介。
 2. 应用按 IMDb ID 匹配官方评分数据。**热门**按 IMDb 投票数排序，**高分**显示评分至少 7.0 的影片并按分数排序。评分数据在设备上缓存 24 小时，供个人非商业使用。[IMDb 公开数据集](https://developer.imdb.com/non-commercial-datasets/) · [使用说明](https://help.imdb.com/article/imdb/general-information/can-i-use-imdb-data-in-my-software/G5JTRESSHJBBHTGX)
-3. 点 **查找下载链接**，合并海盗湾按 IMDb ID 和片名、年份返回的相关记录，并按做种人数从高到低排序。查询达到来源的单次返回上限时会显示提示。[APiBay](https://apibay.org/)
+3. 点 **查找下载链接**，合并海盗湾按 IMDb ID 和片名、年份返回的相关记录，并按做种人数从高到低排序。部分查询超时后，仍会显示已取得的结果，并可点 **重试**。查询达到来源的单次返回上限时会显示提示。[APiBay](https://apibay.org/)
 4. 点 **筛选**，可组合分辨率、HDR 格式、容量上限、最少做种数和标题关键字，也可一键使用 **2160p · HDR10 · 小于 40 GB** 预设。容量按十进制 GB 比较，规格以发布标题标注为准。选中候选后可复制磁力链接或在已安装的应用中打开。
 
 Information courtesy of IMDb (https://www.imdb.com). Used with permission.
@@ -22,6 +22,8 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 3. 填入自己的 TMDB **API Key** 或 **API Read Access Token**，选好资料语言。凭据由 Android Keystore 保护并保存在本机。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
 4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
 5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
+
+**刮削记录**在设备上保存最近 200 条，新的任务会继续追加。关闭应用后重新打开也能查看。
 
 ### 连接检测
 
@@ -39,7 +41,7 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 
 出现网络报错时，可以在 **中文字幕** 区点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索或获取详情时遇到连接重置、超时或解析失败，应用会尝试另一条 HTTPS 线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
 
-支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。已有文件会保留，重复内容会跳过。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
+支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。刮削记录会列出新保存字幕的来源和文件名。已有文件会保留，重复内容会跳过并标注本次匹配到的来源。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
 
 ## 文件命名和输出
 
@@ -82,6 +84,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.6.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.1)
+
+- 刮削记录追加保存，保留最近 200 条，重新运行任务或重启应用后仍可查看。
+- 新保存的字幕记录会标明实际来源和文件名，便于区分射手影音、伪射手和 SubDL。
+- 修复 apibay.org 的单次超时提前结束查询的问题，保留已收到的结果并可直接重试。
 
 ### [v1.6.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.0)
 

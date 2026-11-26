@@ -402,7 +402,9 @@ final class MoviePushScreen {
         if (worker != null) return;
         LinearLayout content = dialogContent();
         LinearLayout tools = activity.horizontal();
-        TextView result = activity.text("正在搜索海盗湾…", 13, appearance.muted, true);
+        String host = PirateBayReleaseSource.HOST;
+        String searching = "正在查询 " + host + "…";
+        TextView result = activity.text(searching, 13, appearance.muted, true);
         result.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         tools.addView(result, new LinearLayout.LayoutParams(0, -2, 1f));
         Button filter = activity.button("筛选", appearance.tint, appearance.accent);
@@ -411,8 +413,16 @@ final class MoviePushScreen {
         LinearLayout.LayoutParams filterSpace = new LinearLayout.LayoutParams(-2, -2);
         filterSpace.leftMargin = dp(8);
         tools.addView(filter, filterSpace);
+        Button retry = activity.button("重试", appearance.tint, appearance.foreground);
+        retry.setMinHeight(dp(48));
+        retry.setContentDescription("重试查询 " + host);
+        retry.setVisibility(View.GONE);
+        LinearLayout.LayoutParams retrySpace = new LinearLayout.LayoutParams(-2, -2);
+        retrySpace.leftMargin = dp(6);
+        tools.addView(retry, retrySpace);
         activity.add(content, tools, 0);
         TextView notice = activity.text("", 12, appearance.muted, false);
+        notice.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         notice.setVisibility(View.GONE);
         activity.add(content, notice, 6);
         ListView list = new ListView(activity);
@@ -427,7 +437,6 @@ final class MoviePushScreen {
         list.setVisibility(View.GONE);
         content.addView(list, rowsSpace);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(movie.title()).setView(content)
-                .setNeutralButton("重试", null)
                 .setNegativeButton("关闭", null).create();
         releasesDialog = dialog;
         dialog.setOnDismissListener(ignored -> {
@@ -438,7 +447,6 @@ final class MoviePushScreen {
         });
         dialog.show();
 
-        Button retry = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
         list.setOnItemClickListener((parent, row, position, id) -> {
             PirateBayReleaseSource.Candidate candidate = adapter.getItem(position);
             dialog.dismiss();
@@ -448,7 +456,12 @@ final class MoviePushScreen {
             PirateBayReleaseSource.SearchResult source = adapter.source;
             int total = source.candidates().size();
             int visible = adapter.getCount();
-            if (total == 0) {
+            boolean failed = !adapter.queryFailure.isEmpty();
+            if (failed && total == 0) {
+                result.setText("无法查询 " + host);
+            } else if (total == 0 && source.incomplete()) {
+                result.setText("暂无法确认有没有相关链接");
+            } else if (total == 0) {
                 result.setText("未找到相关磁力链接");
             } else if (visible == 0) {
                 result.setText("没有符合筛选条件的链接");
@@ -456,35 +469,42 @@ final class MoviePushScreen {
                 result.setText((adapter.filter.active() ? visible + " / " + total : Integer.toString(total))
                         + " 条 · 按做种数排序");
             }
-            List<String> messages = new ArrayList<>(2);
-            if (source.incomplete()) messages.add("部分查询失败，可重试");
+            List<String> messages = new ArrayList<>(3);
+            if (failed) {
+                messages.add(adapter.queryFailure);
+                if (total > 0) messages.add("已保留上次查询结果");
+            } else if (source.incomplete()) {
+                messages.add(host + " 部分查询失败，结果可能不完整");
+            }
             if (source.capped()) messages.add("部分查询已达来源返回上限");
-            notice.setText(String.join(" · ", messages));
+            notice.setText(String.join("\n", messages));
             notice.setVisibility(messages.isEmpty() ? View.GONE : View.VISIBLE);
             filter.setEnabled(total > 0);
             filter.setText(adapter.filter.active() ? "筛选已启用" : "筛选");
+            retry.setVisibility(failed || source.incomplete() ? View.VISIBLE : View.GONE);
             list.setVisibility(visible == 0 ? View.GONE : View.VISIBLE);
-            list.setSelection(0);
         };
         filter.setOnClickListener(view -> showReleaseFilters(adapter.filter, selected -> {
             adapter.filter = selected;
             adapter.update();
             render.run();
+            list.setSelection(0);
         }));
         Runnable search = () -> {
             if (worker != null) return;
             retry.setVisibility(View.GONE);
             filter.setEnabled(false);
-            result.setText("正在搜索海盗湾…");
+            result.setText(searching);
+            notice.setVisibility(View.GONE);
             launch(() -> findReleases(movie), found -> {
                 adapter.source = found;
+                adapter.queryFailure = "";
                 adapter.update();
                 render.run();
-                retry.setVisibility(found.incomplete() ? View.VISIBLE : View.GONE);
+                list.setSelection(0);
             }, error -> {
-                filter.setEnabled(!adapter.source.candidates().isEmpty());
-                result.setText("链接搜索失败 · " + error);
-                retry.setVisibility(View.VISIBLE);
+                adapter.queryFailure = error;
+                render.run();
             });
         };
         retry.setOnClickListener(view -> search.run());
@@ -591,6 +611,7 @@ final class MoviePushScreen {
     private final class ReleaseAdapter extends BaseAdapter {
         PirateBayReleaseSource.SearchResult source = new PirateBayReleaseSource.SearchResult(Collections.emptyList(), false, false);
         ReleaseFilter filter = ReleaseFilter.ALL;
+        String queryFailure = "";
         private final List<PirateBayReleaseSource.Candidate> visible = new ArrayList<>();
 
         void update() {

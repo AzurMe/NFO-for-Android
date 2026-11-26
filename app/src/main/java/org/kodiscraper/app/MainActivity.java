@@ -42,13 +42,15 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 public final class MainActivity extends Activity {
     private static final int PICK_FOLDER = 1;
@@ -60,9 +62,11 @@ public final class MainActivity extends Activity {
     private static final String STATE_MOVIE_PUSH = "movie_push_visible";
     private static final String[] LANGUAGES = {"zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES"};
     private static final String[] LANGUAGE_NAMES = {"简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español"};
-    private static final int LOG_LIMIT = 50;
+    private static final DateTimeFormatter LOG_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT);
+    private static final Pattern SECRET_PARAMETER = Pattern.compile(
+            "(?i)([?&](?:api[_-]?key|(?:access[_-]?)?token|authorization)=)[^&#\\s]+");
+    private static final Pattern BEARER_VALUE = Pattern.compile("(?i)(\\bBearer\\s+)[A-Za-z0-9._~+/=-]+");
 
-    private final ArrayDeque<String> messages = new ArrayDeque<>();
     private final Set<String> needsReview = new HashSet<>();
     private volatile boolean stopped;
     private volatile Thread worker;
@@ -72,6 +76,7 @@ public final class MainActivity extends Activity {
     private Uri folder;
     private Uri collectionFolder;
     private SharedPreferences settings;
+    private ScrapeHistory history;
     private AppAppearance appearance;
     private AppAppearance.Mode appearanceMode;
     private List<MovieStorage.Movie> movies = Collections.emptyList();
@@ -129,6 +134,7 @@ public final class MainActivity extends Activity {
         setTheme(R.style.AppTheme);
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
+        history = new ScrapeHistory(this);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
@@ -144,7 +150,6 @@ public final class MainActivity extends Activity {
         }
         RetainedUi retained = getLastNonConfigurationInstance() instanceof RetainedUi value ? value : null;
         if (retained != null) {
-            messages.addAll(retained.messages());
             needsReview.addAll(retained.needsReview());
             movies = retained.movies();
             apiVerified = retained.apiVerified();
@@ -153,7 +158,6 @@ public final class MainActivity extends Activity {
         configureWindow();
         buildScreen();
         if (retained != null) {
-            updateLog();
             runState.setText(retained.runText());
             diagnosticReport.setText(retained.report());
             diagnosticReport.setVisibility(retained.reportVisible() ? View.VISIBLE : View.GONE);
@@ -164,6 +168,12 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateLog(history.newestFirst());
+    }
+
     AppAppearance appearance() {
         return appearance;
     }
@@ -172,12 +182,12 @@ public final class MainActivity extends Activity {
     public Object onRetainNonConfigurationInstance() {
         MoviePushScreen.State pushState = moviePush == null ? retainedMoviePush : moviePush.saveState();
         String status = busy ? "任务已中断" : runState.getText().toString();
-        return new RetainedUi(new ArrayList<>(messages), new HashSet<>(needsReview), new ArrayList<>(movies),
+        return new RetainedUi(new HashSet<>(needsReview), new ArrayList<>(movies),
                 apiVerified, status, diagnosticReport.getText().toString(),
                 diagnosticReport.getVisibility() == View.VISIBLE, scroll.getScrollY(), pushState);
     }
 
-    private record RetainedUi(List<String> messages, Set<String> needsReview, List<MovieStorage.Movie> movies,
+    private record RetainedUi(Set<String> needsReview, List<MovieStorage.Movie> movies,
                               boolean apiVerified, String runText, String report, boolean reportVisible,
                               int scraperScroll, MoviePushScreen.State moviePush) {}
 
@@ -922,9 +932,7 @@ public final class MainActivity extends Activity {
         boolean byFolder = preferFolder.isChecked();
         SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         persistOptions();
-        messages.clear();
         needsReview.clear();
-        updateLog();
         begin(client, "正在扫描目录…", () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selectedFolder);
             List<MovieStorage.Movie> scanned = storage.scan(byFolder);
@@ -933,7 +941,7 @@ public final class MainActivity extends Activity {
                 note("发现 " + scanned.size() + " 部影片。");
             });
             if (scanned.isEmpty()) {
-                return () -> runState.setText("没有发现可刮削的电影文件");
+                return () -> finishWithLog("没有发现可刮削的电影文件");
             }
             client.validate();
             post(() -> {
@@ -991,10 +999,7 @@ public final class MainActivity extends Activity {
             }
             String summary = batch.summary(scanned.size(), scanned.size())
                     + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
-            return () -> {
-                runState.setText(summary);
-                note(summary);
-            };
+            return () -> finishWithLog(summary);
         });
     }
 
@@ -1009,13 +1014,11 @@ public final class MainActivity extends Activity {
         Uri selected = folder;
         boolean byFolder = preferFolder.isChecked();
         SubtitleScraper subtitles = subtitleScraper();
-        messages.clear();
-        updateLog();
         begin(null, "正在扫描字幕下载目录…", () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             List<MovieStorage.Movie> scanned = storage.scan(byFolder);
             if (scanned.isEmpty()) {
-                return () -> runState.setText("没有发现可匹配字幕的电影文件");
+                return () -> finishWithLog("没有发现可匹配字幕的电影文件");
             }
             SubtitleBatch batch = new SubtitleBatch();
             for (int index = 0; index < scanned.size(); index++) {
@@ -1026,10 +1029,7 @@ public final class MainActivity extends Activity {
                 downloadSubtitles(subtitles, ScrapeEngine.subtitleQuery(storage, movie), batch);
             }
             String summary = batch.summary();
-            return () -> {
-                runState.setText(summary);
-                note(summary);
-            };
+            return () -> finishWithLog(summary);
         });
     }
 
@@ -1039,13 +1039,25 @@ public final class MainActivity extends Activity {
             SubtitleScraper.Outcome result = scraper.download(query);
             batch.written += result.written;
             batch.duplicates += result.duplicates;
-            if (result.found()) {
-                String description = "字幕 · " + result.source + " · 保存 " + result.written
-                        + " · 已有 " + result.duplicates + " · " + query.movie.relativePath;
+            String moviePath = query.movie.relativePath;
+            for (SubtitleScraper.ProviderFailure failure : result.providerFailures) {
+                post(() -> note("字幕来源失败 · " + failure.source() + " · " + moviePath + " · " + failure.message()));
+            }
+            if (result.written > 0) {
+                String description = "字幕 · 来源 " + result.source + " · " + moviePath + " · 保存 " + result.written
+                        + " · 已有 " + result.duplicates + "\n" + String.join("、", result.writtenFiles);
                 post(() -> note(description));
-            } else {
+            } else if (result.duplicates > 0) {
+                post(() -> note("字幕 · 匹配来源 " + result.source + " · " + moviePath + " · 已有 " + result.duplicates));
+            }
+            if (result.writeFailure != null) {
+                ScrapeEngine.checkCancelled();
+                batch.failed++;
+                post(() -> note("字幕保存失败 · 来源 " + result.source + " · " + moviePath
+                        + " · " + errorText(result.writeFailure)));
+            } else if (!result.found()) {
                 batch.missing++;
-                post(() -> note("未找到匹配的中文字幕 · " + query.movie.relativePath));
+                post(() -> note("未找到匹配的中文字幕 · " + moviePath));
             }
         } catch (IOException problem) {
             ScrapeEngine.checkCancelled();
@@ -1346,6 +1358,7 @@ public final class MainActivity extends Activity {
         dismissKeyboard();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         runState.setText(status);
+        note("[" + LocalDateTime.now().format(LOG_TIME) + "] " + status);
         progress.setVisibility(View.VISIBLE);
         progress.setIndeterminate(true);
         updateUi();
@@ -1376,6 +1389,7 @@ public final class MainActivity extends Activity {
                     runState.setText("已停止");
                     if (diagnostic) {
                         diagnosticReport.setText("连接检测已停止");
+                        note("连接检测已停止");
                     } else {
                         note("任务已停止。已写入的资料可以继续使用。");
                     }
@@ -1383,7 +1397,7 @@ public final class MainActivity extends Activity {
                     runState.setText("操作失败");
                     note(errorText(failure));
                     if (diagnostic) {
-                        diagnosticReport.setText(errorText(failure));
+                        diagnosticReport.setText(redactLogText(errorText(failure)));
                     }
                     if (failure instanceof TmdbClient.HttpException
                             && ((TmdbClient.HttpException) failure).statusCode == 401) {
@@ -1477,16 +1491,32 @@ public final class MainActivity extends Activity {
     }
 
     private void note(String message) {
-        if (messages.size() >= LOG_LIMIT) {
-            messages.removeLast();
-        }
-        messages.addFirst(message);
-        updateLog();
+        updateLog(history.append(redactLogText(message)));
     }
 
-    private void updateLog() {
-        log.setText(String.join("\n", messages));
-        log.setVisibility(messages.isEmpty() ? View.GONE : View.VISIBLE);
+    private String redactLogText(String message) {
+        String safe = SECRET_PARAMETER.matcher(message).replaceAll("$1[已隐藏]");
+        safe = BEARER_VALUE.matcher(safe).replaceAll("$1[已隐藏]");
+        String input = credential.getText().toString().trim();
+        for (String value : new String[]{input, savedCredential, savedAssrtToken, savedSubdlKey}) {
+            if (value.regionMatches(true, 0, "Bearer ", 0, 7)) {
+                value = value.substring(7).trim();
+            }
+            if (value.length() >= 8) {
+                safe = safe.replace(value, "[已隐藏]");
+            }
+        }
+        return safe;
+    }
+
+    private void finishWithLog(String summary) {
+        runState.setText(summary);
+        note(summary);
+    }
+
+    private void updateLog(List<String> entries) {
+        log.setText(String.join("\n", entries));
+        log.setVisibility(entries.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
     private void dismissKeyboard() {
@@ -1497,7 +1527,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.6.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.6.1", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);

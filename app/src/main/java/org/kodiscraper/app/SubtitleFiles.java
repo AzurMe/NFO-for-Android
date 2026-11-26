@@ -11,7 +11,9 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -48,12 +50,16 @@ final class SubtitleFiles {
     }
 
     static final class Result {
+        final List<String> writtenFiles;
         final int written;
         final int duplicates;
+        final IOException failure;
 
-        Result(int written, int duplicates) {
-            this.written = written;
+        Result(List<String> writtenFiles, int duplicates, IOException failure) {
+            this.writtenFiles = Collections.unmodifiableList(new ArrayList<>(writtenFiles));
+            this.written = writtenFiles.size();
             this.duplicates = duplicates;
+            this.failure = failure;
         }
     }
 
@@ -96,7 +102,7 @@ final class SubtitleFiles {
 
     static Result save(MovieStorage storage, MovieStorage.Movie movie, List<Track> tracks) throws IOException {
         if (tracks.isEmpty()) {
-            return new Result(0, 0);
+            return new Result(Collections.emptyList(), 0, null);
         }
         MovieStorage.Directory directory = storage.subdirectory(movie.directory, SUBTITLE_DIRECTORY);
         String filenamePrefix = movie.basename() + CHINESE_SUFFIX;
@@ -113,25 +119,33 @@ final class SubtitleFiles {
             }
         }
 
-        int written = 0;
+        List<String> writtenFiles = new ArrayList<>(tracks.size());
         int duplicates = 0;
-        for (Track track : tracks) {
-            checkCancelled();
-            if (!checksums.add(checksum(track.bytes))) {
-                duplicates++;
-                continue;
-            }
-            for (int number = 1; ; number++) {
-                String suffix = number == 1 ? "" : "." + number;
-                String filename = filenamePrefix + suffix + "." + track.extension;
-                if (occupied.add(filename.toLowerCase(Locale.ROOT))
-                        && storage.write(directory, filename, "application/octet-stream", track.bytes, false)) {
-                    written++;
-                    break;
+        try {
+            for (Track track : tracks) {
+                checkCancelled();
+                if (!checksums.add(checksum(track.bytes))) {
+                    duplicates++;
+                    continue;
+                }
+                for (int number = 1; ; number++) {
+                    String suffix = number == 1 ? "" : "." + number;
+                    String filename = filenamePrefix + suffix + "." + track.extension;
+                    if (occupied.add(filename.toLowerCase(Locale.ROOT))
+                            && storage.write(directory, filename, "application/octet-stream", track.bytes, false)) {
+                        writtenFiles.add(directory.displayName + "/" + filename);
+                        break;
+                    }
                 }
             }
+        } catch (IOException failure) {
+            if (writtenFiles.isEmpty() && duplicates == 0) {
+                checkCancelled();
+                throw failure;
+            }
+            return new Result(writtenFiles, duplicates, failure);
         }
-        return new Result(written, duplicates);
+        return new Result(writtenFiles, duplicates, null);
     }
 
     private static void addExistingChecksum(MovieStorage storage, MovieStorage.Entry entry, Set<String> checksums)
