@@ -268,7 +268,6 @@ public final class MainActivity extends Activity {
 
     private Button navigationItem(LinearLayout parent, String label, int top, boolean moviePush) {
         Button item = button(label, CARD, INK);
-        item.setFocusableInTouchMode(true);
         item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         item.setPadding(dp(15), 0, dp(15), 0);
         item.setTextSize(16);
