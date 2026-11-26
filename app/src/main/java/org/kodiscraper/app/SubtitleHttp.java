@@ -94,7 +94,7 @@ final class SubtitleHttp {
                 connection.setConnectTimeout(connectTimeoutMillis);
                 connection.setReadTimeout(readTimeoutMillis);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.4.1");
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.5.0");
                 if (header != null) {
                     connection.setRequestProperty(header, credential);
                 }

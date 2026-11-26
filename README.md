@@ -6,10 +6,10 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 ## 电影推送
 
-1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。影片的上映日期来自 TMDB，使用应用里已有的 TMDB 凭据获取最近 30 天上映的影片候选。
+1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。应用沿用已配置的 TMDB 凭据取得近 30 天影片及其海报、简介和类型标签。点 **影片详情** 可以展开简介。
 2. 应用按 IMDb ID 匹配官方评分数据。**热门**按 IMDb 投票数排序，**高分**显示评分至少 7.0 的影片并按分数排序。评分数据在设备上缓存 24 小时，供个人非商业使用。[IMDb 公开数据集](https://developer.imdb.com/non-commercial-datasets/) · [使用说明](https://help.imdb.com/article/imdb/general-information/can-i-use-imdb-data-in-my-software/G5JTRESSHJBBHTGX)
-3. 对感兴趣的电影点 **查找下载链接**。应用从海盗湾查询片名及年份，筛选发布标题明确带 `2160p` 和基础 `HDR10`、大小小于 40 GB（40,000,000,000 字节）的结果，并按做种人数排序。规格以发布者标注为准。[APiBay](https://apibay.org/)
-4. 选中一条候选后可以复制磁力链接，或在设备上已安装的应用中打开。
+3. 点 **查找下载链接**，合并海盗湾按 IMDb ID 和片名、年份返回的相关记录，并按做种人数从高到低排序。查询达到来源的单次返回上限时会显示提示。[APiBay](https://apibay.org/)
+4. 点 **筛选**，可组合分辨率、HDR 格式、容量上限、最少做种数和标题关键字，也可一键使用 **2160p · HDR10 · 小于 40 GB** 预设。容量按十进制 GB 比较，规格以发布标题标注为准。选中候选后可复制磁力链接或在已安装的应用中打开。
 
 Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 
@@ -80,6 +80,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.5.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.5.0)
+
+- 海盗湾合并 IMDb ID、片名和年份查询，默认显示来源返回的全部相关结果，去重后按做种人数排序。
+- 增加分辨率、HDR 格式、容量、做种数和关键字筛选，并保留 2160p、HDR10、小于 40 GB 预设。
+- 电影推送增加海报、简介、类型标签和影片详情。
 
 ### [v1.4.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.4.1)
 

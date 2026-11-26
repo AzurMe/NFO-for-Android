@@ -43,7 +43,16 @@ final class ImdbMovieFeed {
     }
 
     record Movie(String title, String originalTitle, String imdbId, LocalDate releaseDate,
-                 double rating, int votes) {}
+                 double rating, int votes, String posterPath, String overview, List<String> genres) {
+        Movie(String title, String originalTitle, String imdbId, LocalDate releaseDate, double rating, int votes) {
+            this(title, originalTitle, imdbId, releaseDate, rating, votes, "", "", Collections.emptyList());
+        }
+
+        Movie {
+            genres = genres == null ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(genres));
+        }
+    }
 
     private record Rating(double value, int votes) {}
 
@@ -71,7 +80,8 @@ final class ImdbMovieFeed {
             if (title.isEmpty()) title = originalTitle;
             if (!title.isEmpty()) {
                 movies.add(new Movie(title, originalTitle, item.getKey(), movie.releaseDate(),
-                        rating.value(), rating.votes()));
+                        rating.value(), rating.votes(), cleanTitle(movie.posterPath()),
+                        cleanTitle(movie.overview()), movie.genres()));
             }
         }
         return movies;

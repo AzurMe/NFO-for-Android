@@ -22,10 +22,12 @@ import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -53,6 +55,10 @@ public final class TmdbClient {
     private static final int MAX_SHORT_TITLE_PAGES = 3;
     private static final int DISCOVER_PAGE_SIZE = 20;
     private static final int RECENT_DETAIL_CONCURRENCY = 4;
+    private static final int MAX_MOVIE_TITLE_LENGTH = 220;
+    private static final int MAX_OVERVIEW_LENGTH = 1200;
+    private static final int MAX_GENRES = 8;
+    private static final int MAX_GENRE_LENGTH = 48;
     private static final Pattern IMAGE_PATH = Pattern.compile(
             "/[A-Za-z0-9_-]+\\.(jpe?g|png|webp|gif)", Pattern.CASE_INSENSITIVE);
     private static final Pattern IMDB_ID = Pattern.compile("tt[0-9]{5,12}");
@@ -275,15 +281,57 @@ public final class TmdbClient {
         LocalDate date = releaseWithin(details, from, through);
         String imdbId = string(details, "imdb_id").toLowerCase(Locale.ROOT);
         if (date == null || !IMDB_ID.matcher(imdbId).matches()) return null;
-        String originalTitle = string(details, "original_title");
-        if (originalTitle.isEmpty()) originalTitle = string(seed, "original_title");
-        String title = string(details, "title");
-        if (title.isEmpty()) title = string(seed, "title");
+        String originalTitle = movieText(details, seed, "original_title", MAX_MOVIE_TITLE_LENGTH);
+        String title = movieText(details, seed, "title", MAX_MOVIE_TITLE_LENGTH);
         if (title.isEmpty()) title = originalTitle;
         if (title.isEmpty()) return null;
         String poster = string(details, "poster_path");
         if (!validImagePath(poster)) poster = string(seed, "poster_path");
-        return new RecentMovie(title, originalTitle, imdbId, date, validImagePath(poster) ? poster : "");
+        return new RecentMovie(title, originalTitle, imdbId, date, validImagePath(poster) ? poster : "",
+                movieText(details, seed, "overview", MAX_OVERVIEW_LENGTH), recentGenres(details));
+    }
+
+    private static String movieText(JSONObject details, JSONObject seed, String field, int limit) {
+        String value = movieText(string(details, field), limit);
+        return value.isEmpty() ? movieText(string(seed, field), limit) : value;
+    }
+
+    private static String movieText(String source, int limit) {
+        if (source == null || source.isEmpty()) return "";
+        StringBuilder value = new StringBuilder(Math.min(source.length(), limit));
+        boolean separator = false;
+        int added = 0;
+        for (int offset = 0; offset < source.length() && added < limit; ) {
+            int character = source.codePointAt(offset);
+            offset += Character.charCount(character);
+            if (Character.isWhitespace(character) || Character.isSpaceChar(character)) {
+                separator = value.length() > 0;
+                continue;
+            }
+            if (Character.isISOControl(character) || (character >= 0x202A && character <= 0x202E)
+                    || (character >= 0x2066 && character <= 0x2069)) continue;
+            if (separator) {
+                if (added + 1 >= limit) break;
+                value.append(' ');
+                added++;
+                separator = false;
+            }
+            value.appendCodePoint(character);
+            added++;
+        }
+        return value.toString();
+    }
+
+    private static List<String> recentGenres(JSONObject details) {
+        JSONArray entries = details.optJSONArray("genres");
+        Set<String> names = new LinkedHashSet<>();
+        if (entries != null) {
+            for (int i = 0; i < entries.length() && names.size() < MAX_GENRES; i++) {
+                String value = movieText(string(entries.optJSONObject(i), "name"), MAX_GENRE_LENGTH);
+                if (!value.isEmpty()) names.add(value);
+            }
+        }
+        return new ArrayList<>(names);
     }
 
     private static boolean isRecentMovie(JSONObject movie) {
@@ -303,8 +351,22 @@ public final class TmdbClient {
         }
     }
 
+    public static String moviePosterUrl(String posterPath) {
+        return posterPath != null && validImagePath(posterPath) ? IMAGE_BASE + "w342" + posterPath : "";
+    }
+
     public record RecentMovie(String title, String originalTitle, String imdbId,
-                              LocalDate releaseDate, String posterPath) {}
+                              LocalDate releaseDate, String posterPath, String overview, List<String> genres) {
+        public RecentMovie {
+            overview = overview == null ? "" : overview;
+            genres = genres == null ? Collections.emptyList() : Collections.unmodifiableList(new ArrayList<>(genres));
+        }
+
+        public RecentMovie(String title, String originalTitle, String imdbId,
+                           LocalDate releaseDate, String posterPath) {
+            this(title, originalTitle, imdbId, releaseDate, posterPath, "", Collections.emptyList());
+        }
+    }
 
     public JSONObject details(int tmdbId) throws IOException {
         if (tmdbId <= 0) throw new IOException("无效的 TMDB 电影编号");
