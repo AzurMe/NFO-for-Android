@@ -16,6 +16,7 @@ import java.time.Year;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -28,6 +29,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public final class MovieStorage {
+    private static final String TRAILER_SUFFIX = "-trailer";
     private static final String[] DOCUMENT_COLUMNS = {
             Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME, Document.COLUMN_MIME_TYPE
     };
@@ -67,7 +69,7 @@ public final class MovieStorage {
     private static final Pattern GENERIC_TITLE = Pattern.compile(
             "(?i)^(?:movie|main|video|film|feature|影片|电影|正片)$"
     );
-    private static final Pattern ACTOR_ILLEGAL_CHARS = Pattern.compile("[\\x00-\\x1f/\\\\:*?\"<>|]");
+    private static final Pattern ILLEGAL_FILE_NAME_CHARS = Pattern.compile("[\\x00-\\x1f/\\\\:*?\"<>|]");
 
     private final ContentResolver resolver;
     private final Uri treeUri;
@@ -150,13 +152,13 @@ public final class MovieStorage {
         public final String imdbId;
         public final int tmdbId;
         public final String nfoName;
-        public final String legacyNfoName;
+        public final List<String> legacyNfoNames;
         public final String localTrailerPath;
         public final boolean singleMovieInDirectory;
         private final String basename;
 
         Movie(Entry video, Directory directory, String basename, FileNameHints hints, FileNameHints alternate,
-                boolean singleMovieInDirectory, String legacyNfoName, String localTrailerPath) {
+                boolean singleMovieInDirectory, List<String> legacyNfoNames, String localTrailerPath) {
             this.uri = video.uri;
             this.directory = directory;
             this.displayName = video.displayName;
@@ -170,7 +172,7 @@ public final class MovieStorage {
             this.basename = basename;
             this.nfoName = basename + ".nfo";
             this.singleMovieInDirectory = singleMovieInDirectory;
-            this.legacyNfoName = legacyNfoName;
+            this.legacyNfoNames = Collections.unmodifiableList(new ArrayList<>(legacyNfoNames));
             this.localTrailerPath = localTrailerPath;
         }
 
@@ -181,6 +183,10 @@ public final class MovieStorage {
 
     public List<Movie> scan() throws IOException {
         return scan(false);
+    }
+
+    public Directory rootDirectory() {
+        return root;
     }
 
     public List<Movie> scan(boolean preferFolderTitle) throws IOException {
@@ -210,8 +216,9 @@ public final class MovieStorage {
                 } else if (isVideo(child.displayName)) {
                     String basename = stem(child.displayName);
                     String foldedBase = lower(basename);
-                    if (foldedBase.endsWith("-trailer")) {
-                        trailers.put(foldedBase.substring(0, foldedBase.length() - 8), child.displayName);
+                    if (foldedBase.endsWith(TRAILER_SUFFIX)) {
+                        trailers.put(foldedBase.substring(0, foldedBase.length() - TRAILER_SUFFIX.length()),
+                                child.displayName);
                     } else if (!EXTRA_SUFFIX.matcher(basename).find()) {
                         videos.putIfAbsent(foldedBase, child);
                     }
@@ -223,26 +230,39 @@ public final class MovieStorage {
                     ? parseFolderTitle(directory.displayName) : null;
             boolean useFolderTitle = preferFolderTitle && folderHints != null && usableTitle(folderHints.title);
             for (VideoCandidate candidate : titles) {
-                Entry legacy = singleMovie && !candidate.basename.equalsIgnoreCase("movie")
-                        ? directory.lookup("movie.nfo") : null;
                 String firstPartStem = stem(candidate.video.displayName);
-                if (legacy == null && !candidate.basename.equals(firstPartStem)) {
-                    legacy = directory.lookup(firstPartStem + ".nfo");
+                String canonicalNfo = candidate.basename + ".nfo";
+                List<String> legacyNfoNames = new ArrayList<>(2);
+                addNfoAlias(directory, firstPartStem + ".nfo", canonicalNfo, legacyNfoNames);
+                if (singleMovie) {
+                    addNfoAlias(directory, "movie.nfo", canonicalNfo, legacyNfoNames);
                 }
-                String legacyName = legacy != null && !(legacy instanceof Directory) ? legacy.displayName : null;
                 FileNameHints fileHints = parseFolderTitle(candidate.basename);
                 FileNameHints hints = combineHints(fileHints, folderHints, useFolderTitle);
                 FileNameHints alternate = useFolderTitle ? alternateTitle(fileHints, hints) : null;
                 String trailer = trailers.get(lower(candidate.basename));
-                if (trailer == null && singleMovie) {
+                if (trailer == null && !candidate.basename.equals(firstPartStem)) {
+                    trailer = trailers.get(lower(firstPartStem));
+                }
+                if (trailer == null && singleMovie && !directory.relativePath.isEmpty()) {
                     trailer = trailers.get("movie");
                 }
                 movies.add(new Movie(candidate.video, directory, candidate.basename, hints, alternate,
-                        singleMovie, legacyName, trailer));
+                        singleMovie, legacyNfoNames, trailer));
             }
         }
         movies.sort(Comparator.comparing(movie -> movie.relativePath, String.CASE_INSENSITIVE_ORDER));
         return movies;
+    }
+
+    private static void addNfoAlias(Directory directory, String name, String canonicalName, List<String> aliases) {
+        if (name.equalsIgnoreCase(canonicalName)) {
+            return;
+        }
+        Entry entry = directory.lookup(name);
+        if (entry != null && !(entry instanceof Directory) && !aliases.contains(entry.displayName)) {
+            aliases.add(entry.displayName);
+        }
     }
 
     private static final class VideoCandidate {
@@ -650,11 +670,18 @@ public final class MovieStorage {
     }
 
     public static String actorArtworkName(String actorName) {
-        String legal = ACTOR_ILLEGAL_CHARS.matcher(actorName.replace(' ', '_')).replaceAll("_");
+        String legal = ILLEGAL_FILE_NAME_CHARS.matcher(actorName.replace(' ', '_')).replaceAll("_");
         if (legal.isEmpty() || legal.equals(".") || legal.equals("..")) {
             return "";
         }
         return legal + ".jpg";
+    }
+
+    public static String collectionFolderName(String title) {
+        if (title == null) {
+            return "";
+        }
+        return ILLEGAL_FILE_NAME_CHARS.matcher(title).replaceAll("_").replaceFirst("[. ]+$", "");
     }
 
     private static boolean isVideo(String name) {

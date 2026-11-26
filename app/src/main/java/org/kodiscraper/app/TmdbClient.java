@@ -1,6 +1,7 @@
 package org.kodiscraper.app;
 
 import android.icu.text.Transliterator;
+import android.icu.util.ULocale;
 import android.os.Build;
 
 import org.json.JSONArray;
@@ -46,10 +47,12 @@ public final class TmdbClient {
     private static final int MAX_SHORT_TITLE_PAGES = 3;
     private static final Pattern IMAGE_PATH = Pattern.compile(
             "/[A-Za-z0-9_-]+\\.(jpe?g|png|webp|gif)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern YOUTUBE_ID = Pattern.compile("[a-zA-Z0-9_-]{11}");
     private static final Pattern BEARER_TOKEN = Pattern.compile("[A-Za-z0-9._~+/-]+=*");
     private static final Pattern PART_ONE_SUFFIX = Pattern.compile(
             "[\\p{Z}\\p{P}\\s]+part[\\p{Z}\\p{P}\\s]+(?:one|1|i|Ⅰ)[\\p{Z}\\p{P}\\s]*$",
             Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+    private static final String[] MOVIE_ART_GROUPS = {"posters", "backdrops", "logos"};
 
     private final String apiKey;
     private final String bearerToken;
@@ -186,25 +189,11 @@ public final class TmdbClient {
         JSONObject movie = json(moviePath, "language", language,
                 "append_to_response", "external_ids,credits,images,videos,keywords,release_dates,"
                         + "alternative_titles,translations",
-                "include_image_language", imageLanguages,
-                "include_video_language", imageLanguages);
+                "include_image_language", imageLanguages);
 
         fillMissingTranslations(movie);
-        if (!language.equalsIgnoreCase(ENGLISH) && !hasTrailer(movie.optJSONObject("videos"))) {
-            JSONObject videos = optionalJson(moviePath + "/videos", "language", ENGLISH);
-            if (hasTrailer(videos)) {
-                JSONObject local = movie.optJSONObject("videos");
-                JSONArray localVideos = local == null ? null : local.optJSONArray("results");
-                JSONArray fallbackVideos = videos.optJSONArray("results");
-                if (localVideos != null) {
-                    for (int i = 0; i < fallbackVideos.length(); i++) {
-                        localVideos.put(fallbackVideos.opt(i));
-                    }
-                } else {
-                    put(movie, "videos", videos);
-                }
-            }
-        }
+        addTrailerFallback(movie, moviePath);
+        addOriginalArtwork(movie, moviePath);
 
         JSONObject collection = movie.optJSONObject("belongs_to_collection");
         int collectionId = collection == null ? 0 : collection.optInt("id");
@@ -260,30 +249,28 @@ public final class TmdbClient {
         String bestPath = "";
         double bestScore = Double.NEGATIVE_INFINITY;
         if (candidates != null) {
-            String originalLanguage = string(movie, "original_language");
+            String originalLanguage = originalLanguage(movie);
             String primaryPath = string(movie, primary);
             for (int i = 0; i < candidates.length(); i++) {
                 JSONObject image = candidates.optJSONObject(i);
                 if (image == null) continue;
                 String path = string(image, "file_path");
                 if (!validImagePath(path)) continue;
-                String code = string(image, "iso_639_1");
+                String code = imageLanguage(image);
                 if ((textlessOnly && !code.isEmpty()) || (textBearingOnly && code.isEmpty())) {
                     continue;
                 }
                 int width = image.optInt("width");
                 int height = image.optInt("height");
                 if (width > 0 && height > 0
-                        && ((textlessOnly && width >= height) || (textBearingOnly && width <= height))) {
+                        && ((textlessOnly && width >= height)
+                            || (group.equals("backdrops") && width <= height))) {
                     continue;
                 }
 
                 double score = imageLanguageScore(code, originalLanguage,
                         group.equals("backdrops") && !textBearingOnly);
-                if (path.equals(primaryPath)) score += 5;
-                int votes = Math.max(0, image.optInt("vote_count"));
-                score += Math.max(0, image.optDouble("vote_average", 0)) * votes / (votes + 5.0);
-                score += Math.min(4, Math.max(0, width) / 450.0);
+                score += artworkQuality(image, path, primaryPath);
                 if (group.equals("logos") && path.toLowerCase(Locale.ROOT).endsWith(".png")) {
                     score += 3;
                 }
@@ -296,6 +283,51 @@ public final class TmdbClient {
         if (!bestPath.isEmpty()) return bestPath;
         String fallback = string(movie, primary);
         return validImagePath(fallback) ? fallback : "";
+    }
+
+    public List<String> alternateFanart(JSONObject movie, int limit) {
+        List<String> paths = new ArrayList<>();
+        JSONArray backdrops = array(movie.optJSONObject("images"), "backdrops");
+        if (limit <= 0 || backdrops == null) return paths;
+
+        String chosen = artwork(movie, "fanart");
+        String primary = string(movie, "backdrop_path");
+        Map<String, Double> scores = new LinkedHashMap<>();
+        for (int i = 0; i < backdrops.length(); i++) {
+            JSONObject image = backdrops.optJSONObject(i);
+            String path = string(image, "file_path");
+            if (!validImagePath(path) || path.equals(chosen) || !imageLanguage(image).isEmpty()) {
+                continue;
+            }
+            int width = image.optInt("width");
+            int height = image.optInt("height");
+            if (width > 0 && height > 0 && width <= height) continue;
+            double score = artworkQuality(image, path, primary);
+            scores.merge(path, score, Math::max);
+        }
+        paths.addAll(scores.keySet());
+        paths.sort(Comparator.comparingDouble(scores::get).reversed());
+        if (paths.size() > limit) paths.subList(limit, paths.size()).clear();
+        return paths;
+    }
+
+    public String collectionArtwork(JSONObject movie, String type) {
+        String field;
+        switch (type) {
+            case "poster":
+                field = "poster_path";
+                break;
+            case "fanart":
+            case "backdrop":
+                field = "backdrop_path";
+                break;
+            default:
+                return "";
+        }
+        String path = string(movie.optJSONObject("collection_details"), field);
+        if (validImagePath(path)) return path;
+        path = string(movie.optJSONObject("belongs_to_collection"), field);
+        return validImagePath(path) ? path : "";
     }
 
     public String castProfile(JSONObject castPerson) {
@@ -526,26 +558,154 @@ public final class TmdbClient {
     }
 
     private double imageLanguageScore(String code, String original, boolean preferTextless) {
-        if (preferTextless && code.isEmpty()) return 60;
-        if (code.equals(languageCode)) return 50;
-        if (code.equals("en")) return 35;
-        if (!code.isEmpty() && code.equals(original)) return 30;
-        if (code.isEmpty()) return 20;
-        return 5;
+        if (preferTextless && code.isEmpty()) return 100;
+        if (code.equals(languageCode)) return 70;
+        if (!code.isEmpty() && code.equals(original)) return 45;
+        if (code.equals("en")) return 22;
+        return code.isEmpty() ? 5 : 0;
     }
 
-    private static boolean hasTrailer(JSONObject videos) {
-        JSONArray list = videos == null ? null : videos.optJSONArray("results");
-        if (list == null) return false;
-        for (int i = 0; i < list.length(); i++) {
-            JSONObject item = list.optJSONObject(i);
-            if (item == null) continue;
-            String site = string(item, "site");
-            if (string(item, "type").equalsIgnoreCase("Trailer")
-                    && (site.equalsIgnoreCase("YouTube") || site.equalsIgnoreCase("Vimeo"))
-                    && !string(item, "key").isEmpty()) return true;
+    private static double artworkQuality(JSONObject image, String path, String primaryPath) {
+        int votes = Math.max(0, image.optInt("vote_count"));
+        double rating = Math.max(0, image.optDouble("vote_average", 0)) * votes / (votes + 5.0);
+        double width = Math.min(4, Math.max(0, image.optInt("width")) / 450.0);
+        return rating + width + (path.equals(primaryPath) ? 5 : 0);
+    }
+
+    private static JSONArray array(JSONObject object, String key) {
+        return object == null ? null : object.optJSONArray(key);
+    }
+
+    private static String imageLanguage(JSONObject image) {
+        String code = string(image, "iso_639_1").toLowerCase(Locale.ROOT);
+        return code.equals("null") ? "" : code;
+    }
+
+    private static String originalLanguage(JSONObject movie) {
+        String code = string(movie, "original_language").toLowerCase(Locale.ROOT);
+        return code.matches("[a-z]{2,3}") && !code.equals("xx") && !code.equals("und") ? code : "";
+    }
+
+    private void addOriginalArtwork(JSONObject movie, String moviePath) throws IOException {
+        String original = originalLanguage(movie);
+        if (original.isEmpty() || original.equals(languageCode) || original.equals("en")) return;
+        JSONObject images = movie.optJSONObject("images");
+        boolean needsOriginal = false;
+        for (String group : MOVIE_ART_GROUPS) {
+            JSONArray available = array(images, group);
+            if (!hasArtworkLanguage(available, languageCode) && !hasArtworkLanguage(available, original)) {
+                needsOriginal = true;
+                break;
+            }
+        }
+        if (!needsOriginal) return;
+
+        JSONObject additional = optionalJson(moviePath + "/images", "language", originalVideoLocale(original),
+                "include_image_language", original);
+        if (additional == null) return;
+        if (images == null) {
+            images = new JSONObject();
+            put(movie, "images", images);
+        }
+        for (String group : MOVIE_ART_GROUPS) {
+            JSONArray extras = array(additional, group);
+            if (extras == null || extras.length() == 0) continue;
+            JSONArray existing = array(images, group);
+            if (existing == null) {
+                existing = new JSONArray();
+                put(images, group, existing);
+            }
+            Set<String> seen = new HashSet<>();
+            for (int i = 0; i < existing.length(); i++) {
+                seen.add(string(existing.optJSONObject(i), "file_path"));
+            }
+            for (int i = 0; i < extras.length(); i++) {
+                JSONObject image = extras.optJSONObject(i);
+                String path = string(image, "file_path");
+                if (validImagePath(path) && seen.add(path)) existing.put(image);
+            }
+        }
+    }
+
+    private static boolean hasArtworkLanguage(JSONArray images, String language) {
+        if (images == null) return false;
+        for (int i = 0; i < images.length(); i++) {
+            JSONObject image = images.optJSONObject(i);
+            if (language.equals(imageLanguage(image)) && validImagePath(string(image, "file_path"))) {
+                return true;
+            }
         }
         return false;
+    }
+
+    private void addTrailerFallback(JSONObject movie, String moviePath) throws IOException {
+        JSONArray videos = array(movie.optJSONObject("videos"), "results");
+        if (hasPlayableTrailer(videos)) return;
+        String originalLocale = originalVideoLocale(originalLanguage(movie));
+        if (!originalLocale.isEmpty() && !language.equalsIgnoreCase(originalLocale)) {
+            JSONObject fallback = optionalJson(moviePath + "/videos", "language", originalLocale);
+            if (appendPlayableVideos(movie, fallback)) return;
+        }
+        if (!language.equalsIgnoreCase(ENGLISH) && !originalLocale.equalsIgnoreCase(ENGLISH)) {
+            appendPlayableVideos(movie, optionalJson(moviePath + "/videos", "language", ENGLISH));
+        }
+    }
+
+    private static String originalVideoLocale(String code) {
+        if (code.isEmpty()) return "";
+        if (code.equals("en")) return ENGLISH;
+        if (code.equals("cn")) return "cn-HK";
+        String country = ULocale.addLikelySubtags(new ULocale(code)).getCountry();
+        return country.isEmpty() ? code : code + "-" + country;
+    }
+
+    private static boolean appendPlayableVideos(JSONObject movie, JSONObject fallback) {
+        JSONArray extras = array(fallback, "results");
+        if (extras == null || extras.length() == 0) return false;
+        JSONObject data = movie.optJSONObject("videos");
+        JSONArray existing = array(data, "results");
+        Set<String> keys = new HashSet<>();
+        if (existing != null) {
+            for (int i = 0; i < existing.length(); i++) {
+                JSONObject video = existing.optJSONObject(i);
+                String type = playableVideoType(video);
+                if (!type.isEmpty()) keys.add(type + ":" + string(video, "key"));
+            }
+        }
+        boolean hasTrailer = false;
+        for (int i = 0; i < extras.length(); i++) {
+            JSONObject video = extras.optJSONObject(i);
+            String type = playableVideoType(video);
+            if (type.isEmpty()) continue;
+            if (keys.add(type + ":" + string(video, "key"))) {
+                if (existing == null) {
+                    existing = new JSONArray();
+                    if (data == null) {
+                        data = new JSONObject();
+                        put(movie, "videos", data);
+                    }
+                    put(data, "results", existing);
+                }
+                existing.put(video);
+            }
+            if (type.equals("Trailer")) hasTrailer = true;
+        }
+        return hasTrailer;
+    }
+
+    private static boolean hasPlayableTrailer(JSONArray videos) {
+        if (videos == null) return false;
+        for (int i = 0; i < videos.length(); i++) {
+            if (playableVideoType(videos.optJSONObject(i)).equals("Trailer")) return true;
+        }
+        return false;
+    }
+
+    private static String playableVideoType(JSONObject video) {
+        if (!string(video, "site").equalsIgnoreCase("YouTube")
+                || !YOUTUBE_ID.matcher(string(video, "key")).matches()) return "";
+        String type = string(video, "type");
+        return type.equals("Trailer") || type.equals("Teaser") ? type : "";
     }
 
     private JSONObject configuration() throws IOException {

@@ -1,12 +1,10 @@
 package org.kodiscraper.app;
 
-import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.Xml;
 
 import org.json.JSONArray;
-import org.json.JSONException;
 import org.json.JSONObject;
 import org.xmlpull.v1.XmlPullParser;
 
@@ -24,9 +22,12 @@ import java.util.Set;
 
 final class ScrapeEngine {
     static final int ACTOR_LIMIT = 20;
+    static final int ALTERNATE_FANART_LIMIT = 3;
+    private static final int NFO_READ_LIMIT = 1024 * 1024;
     private static final String[] TYPES = {"poster", "fanart", "clearlogo", "landscape", "keyart"};
     private static final String[] SIZES = {"w780", "w1280", "original", "w1280", "w780"};
     private static final String[] EXTENSIONS = {"jpg", "png", "jpeg", "webp"};
+    private static final String[] ACTOR_EXTENSIONS = {"jpg", "png", "tbn"};
 
     enum Result { WRITTEN, INCOMPLETE, PRESERVED, REVIEW }
 
@@ -34,33 +35,31 @@ final class ScrapeEngine {
         void update(String text);
     }
 
-    private final Context context;
     private final MovieStorage storage;
+    private final MovieStorage collectionStorage;
     private final TmdbClient tmdb;
     private final String language;
     private final boolean overwrite;
     private final boolean actorImages;
+    private final boolean alternateFanart;
+    private final Set<Integer> savedCollections = new HashSet<>();
 
-    ScrapeEngine(Context context, MovieStorage storage, TmdbClient tmdb,
-                 String language, boolean overwrite, boolean actorImages) {
-        this.context = context;
+    ScrapeEngine(MovieStorage storage, MovieStorage collectionStorage, TmdbClient tmdb,
+                 String language, boolean overwrite, boolean actorImages, boolean alternateFanart) {
         this.storage = storage;
+        this.collectionStorage = collectionStorage;
         this.tmdb = tmdb;
         this.language = language;
         this.overwrite = overwrite;
         this.actorImages = actorImages;
+        this.alternateFanart = alternateFanart;
     }
 
     Result scrape(MovieStorage.Movie movie, int selectedId, Progress progress) throws IOException {
         checkCancelled();
-        String nfoName = movie.legacyNfoName == null ? movie.nfoName : movie.legacyNfoName;
-        MovieStorage.Entry existingNfo = storage.find(movie.directory, nfoName);
-        if (existingNfo == null && !nfoName.equals(movie.nfoName)) {
-            nfoName = movie.nfoName;
-            existingNfo = storage.find(movie.directory, nfoName);
-        }
-        boolean preserve = existingNfo != null && !overwrite;
-        Identifiers existingIds = readIds(existingNfo);
+        List<NfoSidecar> sidecars = readSidecars(movie);
+        boolean preserve = !sidecars.isEmpty() && !overwrite;
+        Identifiers existingIds = preferredIds(sidecars);
         int tmdbId = selectedId;
         if (tmdbId <= 0) {
             tmdbId = movie.tmdbId > 0 ? movie.tmdbId : existingIds.tmdbId;
@@ -78,7 +77,8 @@ final class ScrapeEngine {
                 return Result.PRESERVED;
             }
             int trustedId = existingIds.tmdbId > 0 ? existingIds.tmdbId : tmdb.findMovieByImdb(existingIds.imdbId);
-            if (trustedId <= 0 || (tmdbId > 0 && tmdbId != trustedId)) {
+            if (trustedId <= 0 || (tmdbId > 0 && tmdbId != trustedId)
+                    || hasConflictingIds(sidecars, existingIds, trustedId)) {
                 return Result.PRESERVED;
             }
             tmdbId = trustedId;
@@ -96,23 +96,36 @@ final class ScrapeEngine {
         JSONObject details = tmdb.details(tmdbId);
         Map<String, String> artwork = new HashMap<>();
         List<String> warnings = new ArrayList<>();
+        for (String type : TYPES) {
+            String existing = findArtwork(movie, type);
+            if (existing != null) {
+                artwork.put(type, existing);
+            }
+        }
+        byte[] updatedNfo = null;
+        if (!preserve) {
+            progress.update("正在合并 Kodi 本地资料");
+            byte[][] previous = new byte[sidecars.size()][];
+            for (int i = 0; i < sidecars.size(); i++) {
+                previous[i] = sidecars.get(i).contents;
+            }
+            ByteArrayOutputStream xml = new ByteArrayOutputStream();
+            KodiNfo.write(xml, details, artwork, new HashMap<>(), language, region(language),
+                    movie.localTrailerPath != null);
+            updatedNfo = KodiNfo.preserveUserFields(xml.toByteArray(), previous);
+        }
         int artWritten = 0;
         for (int i = 0; i < TYPES.length; i++) {
             checkCancelled();
             String type = TYPES[i];
             String path = tmdb.artwork(details, type);
             try {
-                String target = findArtwork(movie, type);
-                if (target != null) {
-                    artwork.put(type, target);
-                }
+                String target = artwork.get(type);
                 if ((target == null || overwrite) && path != null && !path.isEmpty()) {
                     target = target == null ? movie.artworkName(type, "clearlogo".equals(type) ? "png" : "jpg") : target;
-                    byte[] data = formattedImage(tmdb.image(path, SIZES[i]), target);
-                    if (storage.write(movie.directory, target, mime(target), data, overwrite)) {
+                    if (writeImage(storage, movie.directory, target, path, SIZES[i])) {
                         artWritten++;
                     }
-                    artwork.put(type, target);
                 }
             } catch (IOException problem) {
                 rethrowFatal(problem);
@@ -127,22 +140,25 @@ final class ScrapeEngine {
                 warnings.add("演员头像");
             }
         }
+        if (alternateFanart) {
+            artWritten += saveAlternateFanart(movie, details, warnings);
+        }
+        if (collectionStorage != null) {
+            try {
+                artWritten += saveCollectionArtwork(details);
+            } catch (IOException problem) {
+                rethrowFatal(problem);
+                warnings.add("合集图片");
+            }
+        }
         checkCancelled();
-        if (!preserve) {
-            progress.update("正在读取本地视频轨道");
-            JSONObject streams = VideoProbe.probe(context, movie.uri);
-            if (streams.length() > 0) {
-                try {
-                    details.put("streamdetails", streams);
-                } catch (JSONException cause) {
-                    throw new IOException("无法整理视频轨道", cause);
+        if (updatedNfo != null) {
+            storage.write(movie.directory, movie.nfoName, "application/xml", updatedNfo, overwrite);
+            for (NfoSidecar sidecar : sidecars) {
+                if (!sidecar.name.equalsIgnoreCase(movie.nfoName)) {
+                    storage.write(movie.directory, sidecar.name, "application/xml", updatedNfo, true);
                 }
             }
-            checkCancelled();
-            ByteArrayOutputStream xml = new ByteArrayOutputStream();
-            KodiNfo.write(xml, details, artwork, new HashMap<>(), language, region(language),
-                    movie.localTrailerPath != null);
-            storage.write(movie.directory, nfoName, "application/xml", xml.toByteArray(), overwrite);
         }
         if (!warnings.isEmpty()) {
             progress.update("以下图片写入失败：" + String.join("、", warnings));
@@ -157,6 +173,70 @@ final class ScrapeEngine {
         }
         TmdbClient.Candidate candidate = results.get(0);
         return candidate.confident && (requiredYear <= 0 || candidate.year == requiredYear) ? candidate.id : 0;
+    }
+
+    private int saveAlternateFanart(MovieStorage.Movie movie, JSONObject details, List<String> warnings)
+            throws IOException {
+        List<String> images = tmdb.alternateFanart(details, ALTERNATE_FANART_LIMIT);
+        int written = 0;
+        int failures = 0;
+        for (int i = 0; i < images.size(); i++) {
+            String type = "fanart" + (i + 1);
+            try {
+                String target = findArtwork(movie, type);
+                if (target == null || overwrite) {
+                    target = target == null ? movie.artworkName(type, "jpg") : target;
+                    if (writeImage(storage, movie.directory, target, images.get(i), "w1280")) {
+                        written++;
+                    }
+                }
+            } catch (IOException problem) {
+                rethrowFatal(problem);
+                failures++;
+            }
+        }
+        if (failures > 0) {
+            warnings.add(failures + " 张备用背景图");
+        }
+        return written;
+    }
+
+    private int saveCollectionArtwork(JSONObject movie) throws IOException {
+        JSONObject collection = movie.optJSONObject("belongs_to_collection");
+        int id = collection == null ? 0 : collection.optInt("id");
+        if (id <= 0 || savedCollections.contains(id)) {
+            return 0;
+        }
+        String folder = MovieStorage.collectionFolderName(KodiNfo.collectionName(movie));
+        String poster = tmdb.collectionArtwork(movie, "poster");
+        String fanart = tmdb.collectionArtwork(movie, "fanart");
+        if (folder.isEmpty() || (poster.isEmpty() && fanart.isEmpty())) {
+            return 0;
+        }
+        MovieStorage.Directory directory = collectionStorage.subdirectory(collectionStorage.rootDirectory(), folder);
+        int written = saveCollectionImage(directory, "poster", poster, "w780")
+                + saveCollectionImage(directory, "fanart", fanart, "w1280");
+        savedCollections.add(id);
+        return written;
+    }
+
+    private int saveCollectionImage(MovieStorage.Directory directory, String type, String path, String size)
+            throws IOException {
+        if (path.isEmpty()) {
+            return 0;
+        }
+        if (findImage(collectionStorage, directory, type) != null) {
+            return 0;
+        }
+        String name = type + ".jpg";
+        byte[] data = formattedImage(tmdb.image(path, size), name);
+        return collectionStorage.write(directory, name, mime(name), data, false) ? 1 : 0;
+    }
+
+    private boolean writeImage(MovieStorage targetStorage, MovieStorage.Directory directory, String name,
+                               String path, String size) throws IOException {
+        byte[] data = formattedImage(tmdb.image(path, size), name);
+        return targetStorage.write(directory, name, mime(name), data, overwrite);
     }
 
     private int saveActors(MovieStorage.Movie movie, JSONObject details, List<String> warnings) throws IOException {
@@ -189,12 +269,12 @@ final class ScrapeEngine {
             if (actors == null) {
                 actors = storage.subdirectory(movie.directory, ".actors");
             }
-            if (!overwrite && storage.find(actors, target) != null) {
-                continue;
-            }
             try {
-                byte[] data = formattedImage(tmdb.image(profile, "w185"), target);
-                if (storage.write(actors, target, mime(target), data, overwrite)) {
+                String existing = findActorImage(actors, target);
+                if (existing != null && !overwrite) {
+                    continue;
+                }
+                if (writeImage(storage, actors, existing == null ? target : existing, profile, "w185")) {
                     written++;
                 }
             } catch (IOException problem) {
@@ -219,21 +299,33 @@ final class ScrapeEngine {
     }
 
     private String findArtwork(MovieStorage.Movie movie, String type) throws IOException {
-        for (String ext : EXTENSIONS) {
-            MovieStorage.Entry entry = storage.find(movie.directory, movie.artworkName(type, ext));
+        String named = movie.artworkName(type, "jpg");
+        String image = findImage(storage, movie.directory, named.substring(0, named.length() - 4));
+        if (image == null && !overwrite && movie.singleMovieInDirectory) {
+            image = findImage(storage, movie.directory, type);
+        }
+        return image;
+    }
+
+    private static String findImage(MovieStorage storage, MovieStorage.Directory directory, String stem)
+            throws IOException {
+        return findImage(storage, directory, stem, EXTENSIONS);
+    }
+
+    private static String findImage(MovieStorage storage, MovieStorage.Directory directory, String stem,
+                                    String[] extensions) throws IOException {
+        for (String extension : extensions) {
+            MovieStorage.Entry entry = storage.find(directory, stem + "." + extension);
             if (entry != null && !(entry instanceof MovieStorage.Directory)) {
                 return entry.displayName;
             }
         }
-        if (!overwrite && movie.singleMovieInDirectory) {
-            for (String ext : EXTENSIONS) {
-                MovieStorage.Entry entry = storage.find(movie.directory, type + "." + ext);
-                if (entry != null && !(entry instanceof MovieStorage.Directory)) {
-                    return entry.displayName;
-                }
-            }
-        }
         return null;
+    }
+
+    private String findActorImage(MovieStorage.Directory directory, String jpgName) throws IOException {
+        return findImage(storage, directory, jpgName.substring(0, jpgName.length() - 4),
+                ACTOR_EXTENSIONS);
     }
 
     private static byte[] formattedImage(byte[] data, String target) throws IOException {
@@ -282,17 +374,52 @@ final class ScrapeEngine {
         }
     }
 
-    private Identifiers readIds(MovieStorage.Entry entry) throws IOException {
-        Identifiers ids = new Identifiers();
-        if (entry == null) {
-            return ids;
+    private List<NfoSidecar> readSidecars(MovieStorage.Movie movie) throws IOException {
+        List<String> names = new ArrayList<>();
+        names.add(movie.nfoName);
+        names.addAll(movie.legacyNfoNames);
+        List<NfoSidecar> sidecars = new ArrayList<>();
+        for (String name : names) {
+            MovieStorage.Entry entry = storage.find(movie.directory, name);
+            if (entry != null && !(entry instanceof MovieStorage.Directory)) {
+                byte[] contents = storage.read(entry, NFO_READ_LIMIT);
+                sidecars.add(new NfoSidecar(entry.displayName, contents, readIds(contents)));
+            }
         }
+        return sidecars;
+    }
+
+    private static Identifiers preferredIds(List<NfoSidecar> sidecars) {
+        for (NfoSidecar sidecar : sidecars) {
+            if (sidecar.ids.tmdbId > 0 || sidecar.ids.imdbId != null) {
+                return sidecar.ids;
+            }
+        }
+        return new Identifiers();
+    }
+
+    private static boolean hasConflictingIds(List<NfoSidecar> sidecars, Identifiers preferred, int tmdbId) {
+        for (NfoSidecar sidecar : sidecars) {
+            Identifiers ids = sidecar.ids;
+            if ((ids.tmdbId > 0 && ids.tmdbId != tmdbId)
+                    || (preferred.imdbId != null && ids.imdbId != null && !preferred.imdbId.equals(ids.imdbId))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Identifiers readIds(byte[] bytes) throws IOException {
+        Identifiers ids = new Identifiers();
         try {
-            byte[] bytes = storage.read(entry, 1024 * 1024);
             XmlPullParser parser = Xml.newPullParser();
             parser.setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false);
             parser.setInput(new ByteArrayInputStream(bytes), null);
             for (int event = parser.getEventType(); event != XmlPullParser.END_DOCUMENT; event = parser.next()) {
+                if (event == XmlPullParser.START_TAG && parser.getDepth() == 1
+                        && !"movie".equalsIgnoreCase(parser.getName())) {
+                    break;
+                }
                 if (event != XmlPullParser.START_TAG || parser.getDepth() != 2) {
                     continue;
                 }
@@ -367,6 +494,18 @@ final class ScrapeEngine {
     private static final class Identifiers {
         int tmdbId;
         String imdbId;
+    }
+
+    private static final class NfoSidecar {
+        final String name;
+        final byte[] contents;
+        final Identifiers ids;
+
+        NfoSidecar(String name, byte[] contents, Identifiers ids) {
+            this.name = name;
+            this.contents = contents;
+            this.ids = ids;
+        }
     }
 
 }

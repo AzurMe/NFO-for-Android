@@ -49,6 +49,9 @@ import java.util.Set;
 
 public final class MainActivity extends Activity {
     private static final int PICK_FOLDER = 1;
+    private static final int PICK_COLLECTION_FOLDER = 2;
+    private static final int DIRECTORY_ACCESS = Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
     private static final Uri MOVIES_LOCATION = DocumentsContract.buildDocumentUri(
             "com.android.externalstorage.documents", "primary:Movies");
     private static final int INK = 0xff142a21;
@@ -74,17 +77,21 @@ public final class MainActivity extends Activity {
     private boolean busy;
     private boolean apiVerified;
     private Uri folder;
+    private Uri collectionFolder;
     private SharedPreferences settings;
     private List<MovieStorage.Movie> movies = Collections.emptyList();
     private FrameLayout frame;
     private ScrollView scroll;
     private TextView folderName;
+    private TextView collectionFolderName;
     private TextView apiState;
     private TextView diagnosticReport;
     private TextView runState;
     private TextView log;
     private ProgressBar progress;
     private Button pickFolder;
+    private Button pickCollectionFolder;
+    private Button clearCollectionFolder;
     private Button validate;
     private Button start;
     private Button manual;
@@ -94,6 +101,7 @@ public final class MainActivity extends Activity {
     private Switch overwrite;
     private Switch actors;
     private Switch preferFolder;
+    private Switch alternateFanart;
     private LinearLayout logPanel;
     private String savedCredential = "";
 
@@ -105,6 +113,10 @@ public final class MainActivity extends Activity {
         String savedFolder = settings.getString("folder", "");
         if (!savedFolder.isEmpty()) {
             folder = Uri.parse(savedFolder);
+        }
+        String savedCollectionFolder = settings.getString("collection_folder", "");
+        if (!savedCollectionFolder.isEmpty()) {
+            collectionFolder = Uri.parse(savedCollectionFolder);
         }
         configureWindow();
         buildScreen();
@@ -154,6 +166,7 @@ public final class MainActivity extends Activity {
         setContentView(frame);
         frame.requestFocus();
         updateFolderLabel();
+        updateCollectionFolderLabel();
         updateUi();
     }
 
@@ -292,8 +305,28 @@ public final class MainActivity extends Activity {
         add(card, preferFolder, 0);
         actors = option("下载本地演员头像（最多 " + ScrapeEngine.ACTOR_LIMIT + " 张）", settings.getBoolean("actors", true));
         add(card, actors, 0);
-        overwrite = option("覆盖已有 NFO 和图片", settings.getBoolean("overwrite", false));
+        alternateFanart = option("额外保存备用背景图（最多 " + ScrapeEngine.ALTERNATE_FANART_LIMIT + " 张）",
+                settings.getBoolean("alternate_fanart", false));
+        add(card, alternateFanart, 0);
+        overwrite = option("更新已有 NFO 和图片", settings.getBoolean("overwrite", false));
         add(card, overwrite, 0);
+        add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, MUTED, false), 2);
+
+        add(card, text("Kodi 合集资料目录", 14, INK, true), 12);
+        collectionFolderName = text("", 13, MUTED, false);
+        collectionFolderName.setMaxLines(3);
+        collectionFolderName.setTextIsSelectable(true);
+        add(card, collectionFolderName, 4);
+        LinearLayout folderButtons = horizontal();
+        pickCollectionFolder = button("选择合集目录", PALE, GREEN);
+        pickCollectionFolder.setOnClickListener(view -> chooseDirectory(PICK_COLLECTION_FOLDER, collectionFolder));
+        folderButtons.addView(pickCollectionFolder, new LinearLayout.LayoutParams(-2, dp(42)));
+        clearCollectionFolder = button("取消选择", PALE, GREEN);
+        clearCollectionFolder.setOnClickListener(view -> clearCollectionFolder());
+        LinearLayout.LayoutParams clearPlacement = new LinearLayout.LayoutParams(-2, dp(42));
+        clearPlacement.leftMargin = dp(8);
+        folderButtons.addView(clearCollectionFolder, clearPlacement);
+        add(card, folderButtons, 8);
     }
 
     private void addControls(LinearLayout stack) {
@@ -341,13 +374,18 @@ public final class MainActivity extends Activity {
     }
 
     private void chooseFolder() {
+        chooseDirectory(PICK_FOLDER, folder == null ? MOVIES_LOCATION : folder);
+    }
+
+    private void chooseDirectory(int request, Uri initial) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        intent.addFlags(DIRECTORY_ACCESS
                 | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-        Uri initial = folder == null ? MOVIES_LOCATION : folder;
-        intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial);
+        if (initial != null) {
+            intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, initial);
+        }
         try {
-            startActivityForResult(intent, PICK_FOLDER);
+            startActivityForResult(intent, request);
         } catch (RuntimeException unavailable) {
             note("这台设备未提供系统文件夹选择器。");
         }
@@ -356,13 +394,13 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != PICK_FOLDER || result != RESULT_OK || data == null || data.getData() == null) {
+        if ((request != PICK_FOLDER && request != PICK_COLLECTION_FOLDER)
+                || result != RESULT_OK || data == null || data.getData() == null) {
             return;
         }
         Uri selected = data.getData();
-        int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        if ((flags & Intent.FLAG_GRANT_READ_URI_PERMISSION) == 0
-                || (flags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) == 0) {
+        int flags = data.getFlags() & DIRECTORY_ACCESS;
+        if (flags != DIRECTORY_ACCESS) {
             note("请选择允许读取和写入的目录。");
             return;
         }
@@ -372,30 +410,47 @@ public final class MainActivity extends Activity {
             note("无法保存该文件夹的访问权限，请选择其他目录。");
             return;
         }
+        if (request == PICK_COLLECTION_FOLDER) {
+            Uri previous = collectionFolder;
+            collectionFolder = selected;
+            settings.edit().putString("collection_folder", selected.toString()).apply();
+            releaseUnusedDirectory(previous);
+            updateCollectionFolderLabel();
+            note("合集图片目录 · " + directoryName(selected));
+            return;
+        }
         Uri previous = folder;
         folder = selected;
         movies = Collections.emptyList();
         needsReview.clear();
         settings.edit().putString("folder", folder.toString()).apply();
-        if (previous != null && !previous.equals(folder)) {
-            try {
-                getContentResolver().releasePersistableUriPermission(previous,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-            } catch (SecurityException ignored) {
-                // A previously selected document provider may no longer be available.
-            }
-        }
+        releaseUnusedDirectory(previous);
         updateFolderLabel();
         updateUi();
-        note("已选择 " + directoryName());
+        note("已选择 " + directoryName(folder));
     }
 
-    private String directoryName() {
-        if (folder == null) {
-            return "";
+    private void releaseUnusedDirectory(Uri previous) {
+        if (previous != null && !previous.equals(folder) && !previous.equals(collectionFolder)) {
+            try {
+                getContentResolver().releasePersistableUriPermission(previous, DIRECTORY_ACCESS);
+            } catch (SecurityException ignored) {
+                // The previous directory grant may have been revoked.
+            }
         }
+    }
+
+    private void clearCollectionFolder() {
+        Uri previous = collectionFolder;
+        collectionFolder = null;
+        settings.edit().remove("collection_folder").apply();
+        releaseUnusedDirectory(previous);
+        updateCollectionFolderLabel();
+    }
+
+    private static String directoryName(Uri directory) {
         try {
-            String document = DocumentsContract.getTreeDocumentId(folder);
+            String document = DocumentsContract.getTreeDocumentId(directory);
             if (document.startsWith("primary:")) {
                 return "内部存储 / " + document.substring("primary:".length());
             }
@@ -409,8 +464,16 @@ public final class MainActivity extends Activity {
     }
 
     private void updateFolderLabel() {
-        folderName.setText(folder == null ? "内部存储 / Movies（等待授权）" : directoryName());
+        folderName.setText(folder == null ? "内部存储 / Movies（等待授权）" : directoryName(folder));
         pickFolder.setText(folder == null ? "设置搜索路径" : "更改搜索路径");
+    }
+
+    private void updateCollectionFolderLabel() {
+        collectionFolderName.setText(collectionFolder == null
+                ? "可选。选择与 Kodi 相同的目录以补齐合集海报和背景图。"
+                : directoryName(collectionFolder));
+        pickCollectionFolder.setText(collectionFolder == null ? "选择合集目录" : "更改合集目录");
+        clearCollectionFolder.setVisibility(collectionFolder == null ? View.GONE : View.VISIBLE);
     }
 
     private void validateApi() {
@@ -469,9 +532,11 @@ public final class MainActivity extends Activity {
             return;
         }
         Uri selectedFolder = folder;
+        Uri selectedCollection = collectionFolder;
         String selectedLanguage = language();
         boolean replace = overwrite.isChecked();
         boolean downloadActors = actors.isChecked();
+        boolean downloadAlternate = alternateFanart.isChecked();
         boolean byFolder = preferFolder.isChecked();
         persistOptions();
         messages.clear();
@@ -492,8 +557,10 @@ public final class MainActivity extends Activity {
                 apiVerified = true;
                 updateUi();
             });
-            ScrapeEngine engine = new ScrapeEngine(getApplicationContext(), storage, client,
-                    selectedLanguage, replace, downloadActors);
+            MovieStorage collections = selectedCollection == null ? null
+                    : new MovieStorage(getApplicationContext(), selectedCollection);
+            ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
+                    selectedLanguage, replace, downloadActors, downloadAlternate);
             Batch batch = new Batch();
             for (MovieStorage.Movie movie : scanned) {
                 ScrapeEngine.checkCancelled();
@@ -705,7 +772,7 @@ public final class MainActivity extends Activity {
         runState.setText("待确认匹配");
         String shortened = overview == null || overview.isEmpty() ? ""
                 : "\n\n" + (overview.length() <= 270 ? overview : overview.substring(0, 270) + "…");
-        String message = label + shortened + "\n\n将为所选影片写入资料，并替换同名的已有 NFO 和图片。";
+        String message = label + shortened + "\n\n将更新所选影片的资料和图片，并保留旧 NFO 中的观看记录、续播点和个人评分。";
         new AlertDialog.Builder(this).setTitle("确认写入").setMessage(message)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("确认刮削", (dialog, which) -> writeManual(movie, id))
@@ -718,13 +785,17 @@ public final class MainActivity extends Activity {
             return;
         }
         Uri selected = folder;
+        Uri selectedCollection = collectionFolder;
         String selectedLanguage = language();
         boolean downloadActors = actors.isChecked();
+        boolean downloadAlternate = alternateFanart.isChecked();
         persistOptions();
         begin(client, "正在刮削 " + movie.title, () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
-            ScrapeEngine engine = new ScrapeEngine(getApplicationContext(), storage, client,
-                    selectedLanguage, true, downloadActors);
+            MovieStorage collections = selectedCollection == null ? null
+                    : new MovieStorage(getApplicationContext(), selectedCollection);
+            ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
+                    selectedLanguage, true, downloadActors, downloadAlternate);
             ScrapeEngine.Result result = engine.scrape(movie, id, message -> post(() -> note(message)));
             return () -> {
                 needsReview.remove(movie.relativePath);
@@ -775,6 +846,7 @@ public final class MainActivity extends Activity {
     private void persistOptions() {
         settings.edit().putInt("language", language.getSelectedItemPosition())
                 .putBoolean("actors", actors.isChecked())
+                .putBoolean("alternate_fanart", alternateFanart.isChecked())
                 .putBoolean("prefer_folder", preferFolder.isChecked())
                 .putBoolean("overwrite", overwrite.isChecked()).apply();
     }
@@ -911,6 +983,9 @@ public final class MainActivity extends Activity {
         credential.setEnabled(!busy);
         showCredential.setEnabled(!busy);
         actors.setEnabled(!busy);
+        alternateFanart.setEnabled(!busy);
+        pickCollectionFolder.setEnabled(!busy);
+        clearCollectionFolder.setEnabled(!busy);
         overwrite.setEnabled(!busy);
         preferFolder.setEnabled(!busy);
         language.setEnabled(!busy);
@@ -942,7 +1017,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.1.1", 19, INK, true), 0);
+        add(info, text("Kodi 电影刮削器 1.2.0", 19, INK, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, MUTED, false), 12);

@@ -21,6 +21,7 @@ final class KodiNfo {
     private static final Pattern IMAGE_PATH = Pattern.compile("/[a-zA-Z0-9_.-]{1,200}");
     private static final Pattern PREMIERE_DATE = Pattern.compile("[0-9]{4}-[0-9]{2}-[0-9]{2}");
     private static final Pattern YOUTUBE_ID = Pattern.compile("[a-zA-Z0-9_-]{11}");
+    private static final Set<String> ISO_LANGUAGE_CODES = new HashSet<>(Arrays.asList(Locale.getISOLanguages()));
     private static final Set<String> WRITER_JOBS = new HashSet<>(Arrays.asList(
             "Screenplay", "Writer", "Author", "Story", "Novel", "Original Story", "Teleplay",
             "Adaptation", "Book", "Comic Book", "Graphic Novel", "Characters", "Dialogue"));
@@ -51,7 +52,7 @@ final class KodiNfo {
         xml.open("movie");
         xml.tag("title", title);
         xml.tag("originaltitle", text(movie, "original_title"));
-        xml.tag("originallanguage", text(movie, "original_language"));
+        xml.tag("originallanguage", originalLanguage(movie));
         xml.tag("plot", text(movie, "overview"));
         xml.tag("tagline", text(movie, "tagline"));
         int runtime = movie.optInt("runtime");
@@ -84,9 +85,23 @@ final class KodiNfo {
         if (!hasLocalTrailer) {
             xml.tag("trailer", trailer(movie, locale.getLanguage(), country));
         }
-        writeStreamDetails(xml, movie.optJSONObject("streamdetails"));
         xml.close("movie");
         output.write(xml.contents.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    static byte[] preserveUserFields(byte[] generated, byte[]... existing) throws IOException {
+        return KodiNfoPreservation.merge(generated, existing);
+    }
+
+    private static String originalLanguage(JSONObject movie) {
+        JSONArray spoken = array(movie, "spoken_languages");
+        for (int index = 0; index < spoken.length(); index++) {
+            String code = text(spoken.optJSONObject(index), "iso_639_1").toLowerCase(Locale.ROOT);
+            if (ISO_LANGUAGE_CODES.contains(code)) {
+                return code;
+            }
+        }
+        return text(movie, "original_language");
     }
 
     private static void writeIds(Xml xml, JSONObject movie) {
@@ -122,13 +137,18 @@ final class KodiNfo {
     private static void writeCollection(Xml xml, JSONObject movie) {
         JSONObject details = movie.optJSONObject("collection_details");
         JSONObject belongs = movie.optJSONObject("belongs_to_collection");
-        String name = first(text(details, "name"), text(belongs, "name"));
+        String name = collectionName(movie);
         if (!name.isEmpty()) {
             xml.open("set");
             xml.tag("name", name);
             xml.tag("overview", first(text(details, "overview"), text(belongs, "overview")));
             xml.close("set");
         }
+    }
+
+    static String collectionName(JSONObject movie) {
+        return first(text(movie.optJSONObject("collection_details"), "name"),
+                text(movie.optJSONObject("belongs_to_collection"), "name"));
     }
 
     private static void writeNames(Xml xml, String tag, JSONArray entries) {
@@ -403,35 +423,6 @@ final class KodiNfo {
             }
         }
         return best.isEmpty() ? "" : "plugin://plugin.video.youtube/play/?video_id=" + best;
-    }
-
-    private static void writeStreamDetails(Xml xml, JSONObject streamDetails) {
-        if (streamDetails == null || streamDetails.length() == 0) {
-            return;
-        }
-        xml.open("fileinfo");
-        xml.open("streamdetails");
-        writeStreamType(xml, streamDetails, "video",
-                "codec", "aspect", "width", "height", "durationinseconds", "stereomode", "hdrtype");
-        writeStreamType(xml, streamDetails, "audio", "codec", "language", "channels");
-        writeStreamType(xml, streamDetails, "subtitle", "language");
-        xml.close("streamdetails");
-        xml.close("fileinfo");
-    }
-
-    private static void writeStreamType(Xml xml, JSONObject streamDetails, String type, String... fields) {
-        JSONArray tracks = array(streamDetails, type);
-        for (int index = 0; index < tracks.length(); index++) {
-            JSONObject track = tracks.optJSONObject(index);
-            if (track == null || track.length() == 0) {
-                continue;
-            }
-            xml.open(type);
-            for (String field : fields) {
-                xml.tag(field, text(track, field));
-            }
-            xml.close(type);
-        }
     }
 
     private static JSONArray array(JSONObject object, String key) {

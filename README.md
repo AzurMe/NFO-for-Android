@@ -9,8 +9,8 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 1. 从 Releases 的 **Assets** 下载最新的 `KodiMovieScraper-<版本>.apk`。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
 2. 打开应用，点 **设置搜索路径**，在系统文件夹选择器里选中 `内部存储 / Movies` 或其他可写目录，再授权访问。应用会记住该目录并扫描其子文件夹。
 3. 填入自己的 TMDB **API Key** 或 **API Read Access Token**，选好资料语言。凭据由 Android Keystore 保护并保存在本机。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
-4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入时会替换所选影片的同名 NFO 和图片。
-5. 如果需要批量替换旧资料，在设置中启用 **覆盖已有 NFO 和图片**。电影和字幕文件会保留在原目录。
+4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
+5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
 
 ### 连接检测
 
@@ -35,8 +35,11 @@ Movies/
         └── Actor_Name.jpg
 ```
 
-- **NFO** 可包含片名和原名、剧情、上映日期、片长、评分与票数、类型、分级、制作公司、合集、导演、编剧、演员及角色、TMDB 和 IMDb 编号、预告片，以及设备能读取的本地音视频和字幕轨道信息。
+- **NFO** 可包含片名和原名、剧情、上映日期、片长、评分与票数、类型、分级、制作公司、合集、导演、编剧、演员及角色、TMDB 和 IMDb 编号以及预告片。发现本地预告片时优先使用本地文件。音视频轨道和 HDR 等媒体旗标由 Kodi 读取实际视频文件。
 - **影片图片**按 TMDB 的素材情况生成，包括海报、背景图、透明标志、横图和无字海报。开启本地演员头像后，每部电影最多下载 20 张头像。NFO 还会记录 TMDB 提供的其他演员资料和可用头像地址。
+- **旧版文件名**在单片文件夹内支持 `movie.nfo`。更新时以视频同名的 NFO 为主，已经存在的旧文件名也会同步。分段电影同样会同步已经存在的首段 NFO。
+- **备用背景图**可在设置中启用。每部电影最多下载 3 张，命名为 `feature-cut-fanart1.jpg`、`feature-cut-fanart2.jpg` 等。
+- **合集图片**可选择 Kodi 的合集资料目录。Kodi 和本应用需指向同一个目录。应用在目录内按 NFO 中的合集名称创建子目录，并补齐可用的 `poster.jpg` 和 `fanart.jpg`。[Kodi 合集资料目录](https://kodi.wiki/view/Movie_set_information_folder)
 
 ## 在 Kodi 中导入
 
@@ -44,6 +47,9 @@ Movies/
 2. 如果一部电影一个文件夹，启用 **电影位于与电影名匹配的独立文件夹**。
 3. 更新资料库导入新影片。已有影片可在影片信息页点 **刷新**。如果 Kodi 询问是否忽略本地信息，选择 **否**。
 4. 如需显示本地演员头像，开启 Kodi 的 **下载演员缩略图**。如需显示透明标志、横图等额外图片，可把影片图片级别设为 **最大**或自定义。
+5. 如需 Kodi 读取分辨率、音轨和 HDR 等媒体信息，开启视频设置中的 **提取媒体旗标**。[Kodi 视频设置](https://kodi.wiki/view/Settings/Media/Videos)
+
+Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。需要把这些状态写回电影目录时，在 Kodi 中将视频资料库设为 **导出到单独文件**，并按需选择覆盖旧文件。刮削器更新时可保留已写入 NFO 的字段。[Kodi 视频资料库导入与导出](https://kodi.wiki/view/Import-export_library/Video)
 
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
