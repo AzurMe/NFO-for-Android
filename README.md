@@ -1,6 +1,6 @@
 # NFO for Android
 
-NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选择本地电影目录后，应用用 TMDB 匹配影片，把 NFO 和图片写到对应视频旁边。默认使用简体中文，并保留已有的 NFO 和图片。应用支持 Android 8.0（API 26）及以上版本。
+NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选择本地电影目录后，应用用 TMDB 匹配影片，把 NFO 和图片写到对应视频旁边，也可以查找并下载中文字幕。应用默认使用简体中文，支持 Android 8.0（API 26）及以上版本。
 
 [下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest)
 
@@ -16,11 +16,23 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 **测试 TMDB 连接**可以在凭据栏留空时使用。它分别检测 `api.themoviedb.org` 和 `image.tmdb.org`，显示 HTTP 状态、耗时，以及 DNS、超时或 TLS 等错误。未带凭据的 API 请求收到 HTTP 401 表示服务器有响应。填入凭据后，另有一栏显示凭据校验结果。
 
+## 下载中文字幕
+
+在 **中文字幕** 区开启 **随一键刮削和手动匹配下载**，或点 **仅下载字幕** 给已有电影补字幕。仅下载字幕可独立运行，无需填写 TMDB 凭据。
+
+应用按以下顺序查找，每部电影从第一个有可用结果的来源下载最多 3 条。片名匹配的结果可在 Kodi 播放时切换，方便选择与片源时间轴最合适的一条。
+
+1. **射手影音**按本地视频文件指纹匹配，无需密钥。请求包含文件名和四段文件指纹。[射手影音](https://www.shooter.cn/) · [SPlayer 指纹源码](https://github.com/tomasen/splayer/blob/master/Thirdparty/pkg/trunk/sphash/sphash/sphash.cc#L215)
+2. **伪射手**可在 **设置字幕来源** 中填写用户面板提供的 API Token。字幕服务由 ASSRT 提供。[ASSRT](https://assrt.net/) · [API 文档](https://secure.assrt.net/api/doc)
+3. **SubDL**可填写自己的 API Key，按电影 ID 或片名及年份查找简体和繁体字幕。[SubDL](https://subdl.com/) · [API 文档](https://subdl.com/developers)
+
+支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。已有文件会保留，重复内容会跳过。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
+
 ## 文件命名和输出
 
 一部电影一个文件夹时，应用默认优先用文件夹名匹配。例如 `The.Odyssey.2026` 会解析为 **The Odyssey (2026)**，`Dune.Part.One.2021` 会解析为 **Dune Part One (2021)**，并可匹配 TMDB 中的 **Dune (2021)**。散放在根目录的电影按视频文件名匹配。
 
-Kodi 旁置文件按实际视频文件名命名。以下示例里的字幕是原有文件。
+Kodi 旁置文件按实际视频文件名命名。
 
 ```text
 Movies/
@@ -31,8 +43,11 @@ Movies/
     ├── feature-cut-poster.jpg
     ├── feature-cut-fanart.jpg
     ├── feature-cut-clearlogo.png
-    └── .actors/
-        └── Actor_Name.jpg
+    ├── .actors/
+    │   └── Actor_Name.jpg
+    └── Subs/
+        ├── feature-cut.CHN.srt
+        └── feature-cut.CHN.2.srt
 ```
 
 - **NFO** 可包含片名和原名、剧情、上映日期、片长、评分与票数、类型、分级、制作公司、合集、导演、编剧、演员及角色、TMDB 和 IMDb 编号以及预告片。发现本地预告片时优先使用本地文件。音视频轨道和 HDR 等媒体旗标由 Kodi 读取实际视频文件。

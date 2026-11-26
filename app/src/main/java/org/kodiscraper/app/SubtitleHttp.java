@@ -1,0 +1,188 @@
+package org.kodiscraper.app;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+
+final class SubtitleHttp {
+    private static final int JSON_LIMIT = 1024 * 1024;
+    private static final int MAX_REDIRECTS = 3;
+    private static final Map<Thread, HttpURLConnection> ACTIVE = new HashMap<>();
+
+    private SubtitleHttp() {}
+
+    static String encode(String value) {
+        try {
+            return URLEncoder.encode(value, "UTF-8");
+        } catch (java.io.UnsupportedEncodingException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
+    static JSONObject json(String address, String header, String credential, String... domains) throws IOException {
+        try {
+            return new JSONObject(new String(get(address, header, credential, JSON_LIMIT, domains), StandardCharsets.UTF_8));
+        } catch (JSONException invalid) {
+            throw new IOException("字幕服务返回了无法读取的资料");
+        }
+    }
+
+    static byte[] get(String address, String header, String credential, int limit, String... domains)
+            throws IOException {
+        return request(address, header, credential, null, limit, domains);
+    }
+
+    static byte[] postForm(String address, String form, int limit, String... domains) throws IOException {
+        return request(address, null, null, form.getBytes(StandardCharsets.UTF_8), limit, domains);
+    }
+
+    static void cancel(Thread thread) {
+        HttpURLConnection request;
+        synchronized (ACTIVE) {
+            request = ACTIVE.get(thread);
+        }
+        if (request != null) {
+            request.disconnect();
+        }
+    }
+
+    private static byte[] request(String address, String header, String credential, byte[] form, int limit,
+                                  String[] domains) throws IOException {
+        URI target = address(address);
+        String origin = target.getHost();
+        Thread worker = Thread.currentThread();
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            ScrapeEngine.checkCancelled();
+            if (!allowed(target, domains)) {
+                throw new IOException("字幕下载地址超出来源允许范围");
+            }
+            HttpURLConnection connection = (HttpURLConnection) target.toURL().openConnection();
+            try {
+                synchronized (ACTIVE) {
+                    ScrapeEngine.checkCancelled();
+                    ACTIVE.put(worker, connection);
+                }
+                connection.setConnectTimeout(10_000);
+                connection.setReadTimeout(15_000);
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.3.0");
+                if (header != null) {
+                    connection.setRequestProperty(header, credential);
+                }
+                if (form != null) {
+                    connection.setRequestMethod("POST");
+                    connection.setDoOutput(true);
+                    connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
+                    connection.setFixedLengthStreamingMode(form.length);
+                    try (java.io.OutputStream output = connection.getOutputStream()) {
+                        output.write(form);
+                    }
+                }
+                int code = connection.getResponseCode();
+                if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                    String redirect = connection.getHeaderField("Location");
+                    if (redirect == null || form != null) {
+                        throw new IOException("字幕服务返回了无效的跳转");
+                    }
+                    target = target.resolve(address(redirect));
+                    // API credentials may be in the Authorization header or the query string.
+                    if (!origin.equalsIgnoreCase(target.getHost()) && (header != null || address.contains("?"))) {
+                        throw new IOException("字幕服务尝试跨站跳转");
+                    }
+                    continue;
+                }
+                if (code < 200 || code >= 300) {
+                    throw new HttpException(code, errorStatus(connection));
+                }
+                if (connection.getContentLengthLong() > limit) {
+                    throw new IOException("字幕文件超过读取上限");
+                }
+                try (InputStream input = connection.getInputStream()) {
+                    return read(input, limit);
+                }
+            } catch (HttpException failure) {
+                throw failure;
+            } catch (java.net.SocketTimeoutException failure) {
+                throw new IOException("字幕连接超时", failure);
+            } catch (java.net.UnknownHostException failure) {
+                throw new IOException("无法解析字幕服务器地址", failure);
+            } catch (javax.net.ssl.SSLException failure) {
+                throw new IOException("字幕服务器的 HTTPS 连接失败", failure);
+            } finally {
+                synchronized (ACTIVE) {
+                    ACTIVE.remove(worker);
+                }
+                connection.disconnect();
+            }
+        }
+        throw new IOException("字幕服务跳转次数过多");
+    }
+
+    private static URI address(String raw) throws IOException {
+        try {
+            return new URI(raw);
+        } catch (URISyntaxException | NullPointerException failure) {
+            throw new IOException("字幕服务返回了无效的网址");
+        }
+    }
+
+    private static boolean allowed(URI url, String[] domains) {
+        String host = url.getHost();
+        if (!"https".equalsIgnoreCase(url.getScheme()) || host == null || url.getUserInfo() != null
+                || (url.getPort() != -1 && url.getPort() != 443)) {
+            return false;
+        }
+        host = host.toLowerCase(Locale.ROOT);
+        for (String domain : domains) {
+            if (host.equals(domain) || host.endsWith("." + domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int errorStatus(HttpURLConnection connection) {
+        try (InputStream input = connection.getErrorStream()) {
+            return input == null ? -1
+                    : new JSONObject(new String(read(input, 8192), StandardCharsets.UTF_8)).optInt("status", -1);
+        } catch (IOException | JSONException ignored) {
+            return -1;
+        }
+    }
+
+    private static byte[] read(InputStream input, int limit) throws IOException {
+        ByteArrayOutputStream data = new ByteArrayOutputStream(Math.min(limit, 8192));
+        byte[] buffer = new byte[8192];
+        int count;
+        while ((count = input.read(buffer)) >= 0) {
+            ScrapeEngine.checkCancelled();
+            if (count > limit - data.size()) {
+                throw new IOException("字幕文件超过读取上限");
+            }
+            data.write(buffer, 0, count);
+        }
+        return data.toByteArray();
+    }
+
+    static final class HttpException extends IOException {
+        final int statusCode;
+        final int apiStatus;
+
+        HttpException(int statusCode, int apiStatus) {
+            super("字幕服务返回 HTTP " + statusCode);
+            this.statusCode = statusCode;
+            this.apiStatus = apiStatus;
+        }
+    }
+}

@@ -14,21 +14,17 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 final class CredentialStore {
-    private static final String ALIAS = "tmdb-credential";
-    private static final String VALUE = "tmdb_ciphertext";
-    private static final String IV = "tmdb_iv";
-
     private CredentialStore() {}
 
-    static String read(SharedPreferences preferences) {
-        String text = preferences.getString(VALUE, "");
-        String iv = preferences.getString(IV, "");
+    static String read(SharedPreferences preferences, String service) {
+        String text = preferences.getString(service + "_ciphertext", "");
+        String iv = preferences.getString(service + "_iv", "");
         if (text.isEmpty() || iv.isEmpty()) {
             return "";
         }
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.DECRYPT_MODE, key(false),
+            cipher.init(Cipher.DECRYPT_MODE, key(service, false),
                     new GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)));
             return new String(cipher.doFinal(Base64.decode(text, Base64.NO_WRAP)), StandardCharsets.UTF_8);
         } catch (Exception ignored) {
@@ -36,18 +32,20 @@ final class CredentialStore {
         }
     }
 
-    static boolean save(SharedPreferences preferences, String credential) {
+    static boolean save(SharedPreferences preferences, String service, String credential) {
+        String valueKey = service + "_ciphertext";
+        String ivKey = service + "_iv";
         if (credential.isEmpty()) {
-            preferences.edit().remove(VALUE).remove(IV).apply();
+            preferences.edit().remove(valueKey).remove(ivKey).apply();
             return true;
         }
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            cipher.init(Cipher.ENCRYPT_MODE, key(true));
+            cipher.init(Cipher.ENCRYPT_MODE, key(service, true));
             byte[] encrypted = cipher.doFinal(credential.getBytes(StandardCharsets.UTF_8));
             preferences.edit()
-                    .putString(VALUE, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-                    .putString(IV, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
+                    .putString(valueKey, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+                    .putString(ivKey, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
                     .apply();
             return true;
         } catch (Exception ignored) {
@@ -55,15 +53,16 @@ final class CredentialStore {
         }
     }
 
-    private static SecretKey key(boolean create) throws Exception {
+    private static SecretKey key(String service, boolean create) throws Exception {
+        String alias = service + "-credential";
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
         store.load(null);
-        SecretKey saved = (SecretKey) store.getKey(ALIAS, null);
+        SecretKey saved = (SecretKey) store.getKey(alias, null);
         if (saved != null || !create) {
             return saved;
         }
         KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-        generator.init(new KeyGenParameterSpec.Builder(ALIAS,
+        generator.init(new KeyGenParameterSpec.Builder(alias,
                 KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)

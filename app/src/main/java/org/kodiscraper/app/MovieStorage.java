@@ -4,6 +4,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.DocumentsContract.Document;
 
@@ -179,6 +180,10 @@ public final class MovieStorage {
         public String artworkName(String type, String extension) {
             return basename + "-" + type + (extension.startsWith(".") ? "" : ".") + extension;
         }
+
+        public String basename() {
+            return basename;
+        }
     }
 
     public List<Movie> scan() throws IOException {
@@ -326,6 +331,24 @@ public final class MovieStorage {
             load(directory);
         }
         return directory.lookup(name);
+    }
+
+    public List<Entry> list(Directory directory) throws IOException {
+        load(directory);
+        return new ArrayList<>(directory.children.values());
+    }
+
+    ParcelFileDescriptor openVideo(Movie movie) throws IOException {
+        checkCancelled();
+        try {
+            ParcelFileDescriptor source = resolver.openFileDescriptor(movie.uri, "r");
+            if (source == null) {
+                throw new IOException("无法读取视频 " + movie.displayName);
+            }
+            return source;
+        } catch (RuntimeException problem) {
+            throw new IOException("无法读取视频 " + movie.displayName, problem);
+        }
     }
 
     public Directory subdirectory(Directory directory, String name) throws IOException {

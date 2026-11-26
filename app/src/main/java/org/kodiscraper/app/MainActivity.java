@@ -19,6 +19,7 @@ import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
+import android.text.util.Linkify;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -96,20 +97,27 @@ public final class MainActivity extends Activity {
     private Button start;
     private Button manual;
     private Button showCredential;
+    private Button subtitleSettings;
+    private Button subtitlesOnly;
     private EditText credential;
     private Spinner language;
     private Switch overwrite;
     private Switch actors;
     private Switch preferFolder;
     private Switch alternateFanart;
+    private Switch autoSubtitles;
     private LinearLayout logPanel;
     private String savedCredential = "";
+    private String savedAssrtToken = "";
+    private String savedSubdlKey = "";
 
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
-        savedCredential = CredentialStore.read(settings);
+        savedCredential = CredentialStore.read(settings, "tmdb");
+        savedAssrtToken = CredentialStore.read(settings, "assrt");
+        savedSubdlKey = CredentialStore.read(settings, "subdl");
         String savedFolder = settings.getString("folder", "");
         if (!savedFolder.isEmpty()) {
             folder = Uri.parse(savedFolder);
@@ -160,6 +168,7 @@ public final class MainActivity extends Activity {
         addHeader(column);
         addDirectory(column);
         addConnection(column);
+        addSubtitles(column);
         addOptions(column);
         addLog(column);
         addControls(stack);
@@ -202,7 +211,7 @@ public final class MainActivity extends Activity {
         TextView title = text("电影刮削器", 36, WHITE, true);
         title.setLetterSpacing(-.03f);
         add(hero, title, 12);
-        TextView subtitle = text("写入 Kodi 可读取的 NFO、海报和演员资料", 14, 0xffc5dbc9, false);
+        TextView subtitle = text("为 Kodi 下载电影资料、海报和中文字幕", 14, 0xffc5dbc9, false);
         add(hero, subtitle, 7);
         add(column, hero, 0);
     }
@@ -280,6 +289,69 @@ public final class MainActivity extends Activity {
         diagnosticReport.setLineSpacing(dp(3), 1f);
         diagnosticReport.setVisibility(View.GONE);
         add(card, diagnosticReport, 8);
+    }
+
+    private void addSubtitles(LinearLayout column) {
+        LinearLayout card = card(column);
+        add(card, text("中文字幕", 19, INK, true), 0);
+        autoSubtitles = option("随一键刮削和手动匹配下载", settings.getBoolean("auto_subtitles", false));
+        add(card, autoSubtitles, 4);
+        add(card, text("字幕保存到影片的 Subs 文件夹。射手影音无需密钥。", 13, MUTED, false), 0);
+        LinearLayout buttons = horizontal();
+        subtitleSettings = button("设置字幕来源", PALE, GREEN);
+        subtitleSettings.setOnClickListener(view -> showSubtitleSettings());
+        buttons.addView(subtitleSettings, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        subtitlesOnly = button("仅下载字幕", PALE, GREEN);
+        subtitlesOnly.setOnClickListener(view -> runSubtitleBatch());
+        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        placement.leftMargin = dp(8);
+        buttons.addView(subtitlesOnly, placement);
+        add(card, buttons, 9);
+    }
+
+    private void showSubtitleSettings() {
+        LinearLayout content = dialogContent();
+        add(content, text("优先用射手影音按视频指纹匹配，无需密钥。填写下列任一凭据可增加搜索范围。",
+                14, MUTED, false), 0);
+        int passwordType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+        EditText assrt = field("伪射手 API Token（选填）", passwordType);
+        assrt.setText(savedAssrtToken);
+        add(content, assrt, 9);
+        EditText subdl = field("SubDL API Key（选填）", passwordType);
+        subdl.setText(savedSubdlKey);
+        add(content, subdl, 8);
+        TextView sources = text("", 13, MUTED, false);
+        sources.setAutoLinkMask(Linkify.WEB_URLS);
+        sources.setText("字幕服务由 https://www.shooter.cn、https://assrt.net 和 https://subdl.com 提供。");
+        add(content, sources, 10);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("字幕来源").setView(content)
+                .setNegativeButton("取消", null).setPositiveButton("保存", null).create();
+        dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+        dialog.show();
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String assrtToken = assrt.getText().toString().trim();
+            String subdlKey = subdl.getText().toString().trim();
+            if (!assrtToken.isEmpty() && !assrtToken.matches("[A-Za-z0-9]{32}")) {
+                assrt.setError("请输入 32 位伪射手 API Token");
+                assrt.requestFocus();
+                return;
+            }
+            if (!subdlKey.isEmpty() && !subdlKey.matches("[!-~]{1,256}")) {
+                subdl.setError("请输入有效的 SubDL API Key");
+                subdl.requestFocus();
+                return;
+            }
+            boolean storedAssrt = assrtToken.equals(savedAssrtToken)
+                    || CredentialStore.save(settings, "assrt", assrtToken);
+            boolean storedSubdl = subdlKey.equals(savedSubdlKey)
+                    || CredentialStore.save(settings, "subdl", subdlKey);
+            savedAssrtToken = assrtToken;
+            savedSubdlKey = subdlKey;
+            if (!storedAssrt || !storedSubdl) {
+                note("设备无法保存字幕凭据，本次仍可使用。");
+            }
+            dialog.dismiss();
+        });
     }
 
     private void addOptions(LinearLayout column) {
@@ -538,6 +610,7 @@ public final class MainActivity extends Activity {
         boolean downloadActors = actors.isChecked();
         boolean downloadAlternate = alternateFanart.isChecked();
         boolean byFolder = preferFolder.isChecked();
+        SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         persistOptions();
         messages.clear();
         needsReview.clear();
@@ -562,13 +635,17 @@ public final class MainActivity extends Activity {
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, replace, downloadActors, downloadAlternate);
             Batch batch = new Batch();
+            SubtitleBatch subtitleBatch = new SubtitleBatch();
             for (MovieStorage.Movie movie : scanned) {
                 ScrapeEngine.checkCancelled();
                 int index = ++batch.started;
                 post(() -> setProgress(index, scanned.size(), movie.title));
+                SubtitleQuery subtitleQuery = null;
                 try {
-                    ScrapeEngine.Result result = engine.scrape(movie, 0,
+                    ScrapeEngine.Outcome scraped = engine.scrape(movie, 0,
                             message -> post(() -> note(movie.relativePath + " · " + message)));
+                    ScrapeEngine.Result result = scraped.result;
+                    subtitleQuery = scraped.subtitleQuery;
                     batch.count(result);
                     post(() -> {
                         if (result == ScrapeEngine.Result.REVIEW) {
@@ -595,13 +672,76 @@ public final class MainActivity extends Activity {
                         post(() -> note("失败 · " + movie.relativePath + " · " + errorText(problem)));
                     }
                 }
+                if (subtitles != null) {
+                    if (subtitleQuery == null) {
+                        subtitleQuery = ScrapeEngine.subtitleQuery(storage, movie);
+                    }
+                    downloadSubtitles(subtitles, subtitleQuery, subtitleBatch);
+                }
             }
-            String summary = batch.summary(scanned.size(), scanned.size());
+            String summary = batch.summary(scanned.size(), scanned.size())
+                    + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
             return () -> {
                 runState.setText(summary);
                 note(summary);
             };
         });
+    }
+
+    private SubtitleScraper subtitleScraper() {
+        return new SubtitleScraper(savedAssrtToken, savedSubdlKey);
+    }
+
+    private void runSubtitleBatch() {
+        if (!requireFolder()) {
+            return;
+        }
+        Uri selected = folder;
+        boolean byFolder = preferFolder.isChecked();
+        SubtitleScraper subtitles = subtitleScraper();
+        messages.clear();
+        updateLog();
+        begin(null, "正在扫描字幕下载目录…", () -> {
+            MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
+            List<MovieStorage.Movie> scanned = storage.scan(byFolder);
+            if (scanned.isEmpty()) {
+                return () -> runState.setText("没有发现可匹配字幕的电影文件");
+            }
+            SubtitleBatch batch = new SubtitleBatch();
+            for (int index = 0; index < scanned.size(); index++) {
+                ScrapeEngine.checkCancelled();
+                MovieStorage.Movie movie = scanned.get(index);
+                int position = index + 1;
+                post(() -> setProgress(position, scanned.size(), "字幕 · " + movie.title));
+                downloadSubtitles(subtitles, ScrapeEngine.subtitleQuery(storage, movie), batch);
+            }
+            String summary = batch.summary();
+            return () -> {
+                runState.setText(summary);
+                note(summary);
+            };
+        });
+    }
+
+    private void downloadSubtitles(SubtitleScraper scraper, SubtitleQuery query, SubtitleBatch batch)
+            throws IOException {
+        try {
+            SubtitleScraper.Outcome result = scraper.download(query);
+            batch.written += result.written;
+            batch.duplicates += result.duplicates;
+            if (result.found()) {
+                String description = "字幕 · " + result.source + " · 保存 " + result.written
+                        + " · 已有 " + result.duplicates + " · " + query.movie.relativePath;
+                post(() -> note(description));
+            } else {
+                batch.missing++;
+                post(() -> note("未找到匹配的中文字幕 · " + query.movie.relativePath));
+            }
+        } catch (IOException problem) {
+            ScrapeEngine.checkCancelled();
+            batch.failed++;
+            post(() -> note("字幕下载失败 · " + query.movie.relativePath + " · " + errorText(problem)));
+        }
     }
 
     private void openManual() {
@@ -773,6 +913,9 @@ public final class MainActivity extends Activity {
         String shortened = overview == null || overview.isEmpty() ? ""
                 : "\n\n" + (overview.length() <= 270 ? overview : overview.substring(0, 270) + "…");
         String message = label + shortened + "\n\n将更新所选影片的资料和图片，并保留旧 NFO 中的观看记录、续播点和个人评分。";
+        if (autoSubtitles.isChecked()) {
+            message += "同时查找中文字幕。";
+        }
         new AlertDialog.Builder(this).setTitle("确认写入").setMessage(message)
                 .setNegativeButton("取消", null)
                 .setPositiveButton("确认刮削", (dialog, which) -> writeManual(movie, id))
@@ -789,6 +932,7 @@ public final class MainActivity extends Activity {
         String selectedLanguage = language();
         boolean downloadActors = actors.isChecked();
         boolean downloadAlternate = alternateFanart.isChecked();
+        SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         persistOptions();
         begin(client, "正在刮削 " + movie.title, () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
@@ -796,12 +940,20 @@ public final class MainActivity extends Activity {
                     : new MovieStorage(getApplicationContext(), selectedCollection);
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, true, downloadActors, downloadAlternate);
-            ScrapeEngine.Result result = engine.scrape(movie, id, message -> post(() -> note(message)));
+            ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> post(() -> note(message)));
+            ScrapeEngine.Result result = scraped.result;
+            SubtitleBatch batch = new SubtitleBatch();
+            if (subtitles != null) {
+                downloadSubtitles(subtitles, scraped.subtitleQuery, batch);
+            }
             return () -> {
                 needsReview.remove(movie.relativePath);
                 apiVerified = true;
                 runState.setText(resultLabel(result));
                 note(resultLabel(result) + " · " + movie.relativePath);
+                if (subtitles != null) {
+                    note(batch.summary());
+                }
                 updateUi();
             };
         });
@@ -835,7 +987,7 @@ public final class MainActivity extends Activity {
     private void saveCredential() {
         String value = credential.getText().toString().trim();
         if (!value.equals(savedCredential)) {
-            if (CredentialStore.save(settings, value)) {
+            if (CredentialStore.save(settings, "tmdb", value)) {
                 savedCredential = value;
             } else if (log != null) {
                 note("设备无法保存凭据，本次仍可使用。");
@@ -847,6 +999,7 @@ public final class MainActivity extends Activity {
         settings.edit().putInt("language", language.getSelectedItemPosition())
                 .putBoolean("actors", actors.isChecked())
                 .putBoolean("alternate_fanart", alternateFanart.isChecked())
+                .putBoolean("auto_subtitles", autoSubtitles.isChecked())
                 .putBoolean("prefer_folder", preferFolder.isChecked())
                 .putBoolean("overwrite", overwrite.isChecked()).apply();
     }
@@ -937,6 +1090,7 @@ public final class MainActivity extends Activity {
         Thread running = worker;
         if (running != null) {
             running.interrupt();
+            SubtitleHttp.cancel(running);
         }
         if (activeClient != null) {
             activeClient.cancel();
@@ -956,6 +1110,7 @@ public final class MainActivity extends Activity {
         Thread running = worker;
         if (running != null) {
             running.interrupt();
+            SubtitleHttp.cancel(running);
         }
         if (activeClient != null) {
             activeClient.cancel();
@@ -982,6 +1137,9 @@ public final class MainActivity extends Activity {
         manual.setEnabled(!busy);
         credential.setEnabled(!busy);
         showCredential.setEnabled(!busy);
+        subtitleSettings.setEnabled(!busy);
+        subtitlesOnly.setEnabled(!busy);
+        autoSubtitles.setEnabled(!busy);
         actors.setEnabled(!busy);
         alternateFanart.setEnabled(!busy);
         pickCollectionFolder.setEnabled(!busy);
@@ -1017,7 +1175,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.2.0", 19, INK, true), 0);
+        add(info, text("Kodi 电影刮削器 1.3.0", 19, INK, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, MUTED, false), 12);
@@ -1088,6 +1246,18 @@ public final class MainActivity extends Activity {
         String summary(int completed, int total) {
             return "处理 " + completed + "/" + total + " 部 · 写入 " + written + " · 待补图 "
                     + incomplete + " · 保留 " + preserved + " · 待确认 " + review + " · 失败 " + failed;
+        }
+    }
+
+    private static final class SubtitleBatch {
+        int written;
+        int duplicates;
+        int missing;
+        int failed;
+
+        String summary() {
+            return "字幕 · 保存 " + written + " 个 · 已有 " + duplicates + " 个 · 未匹配 " + missing
+                    + " 部 · 失败 " + failed + " 部";
         }
     }
 

@@ -31,6 +31,16 @@ final class ScrapeEngine {
 
     enum Result { WRITTEN, INCOMPLETE, PRESERVED, REVIEW }
 
+    static final class Outcome {
+        final Result result;
+        final SubtitleQuery subtitleQuery;
+
+        Outcome(Result result, SubtitleQuery subtitleQuery) {
+            this.result = result;
+            this.subtitleQuery = subtitleQuery;
+        }
+    }
+
     interface Progress {
         void update(String text);
     }
@@ -55,11 +65,14 @@ final class ScrapeEngine {
         this.alternateFanart = alternateFanart;
     }
 
-    Result scrape(MovieStorage.Movie movie, int selectedId, Progress progress) throws IOException {
+    Outcome scrape(MovieStorage.Movie movie, int selectedId, Progress progress) throws IOException {
         checkCancelled();
-        List<NfoSidecar> sidecars = readSidecars(movie);
+        List<NfoSidecar> sidecars = readSidecars(storage, movie);
         boolean preserve = !sidecars.isEmpty() && !overwrite;
         Identifiers existingIds = preferredIds(sidecars);
+        SubtitleQuery subtitleQuery = selectedId > 0
+                ? new SubtitleQuery(storage, movie, null, selectedId, null)
+                : fallbackSubtitleQuery(storage, movie, sidecars);
         int tmdbId = selectedId;
         if (tmdbId <= 0) {
             tmdbId = movie.tmdbId > 0 ? movie.tmdbId : existingIds.tmdbId;
@@ -67,19 +80,19 @@ final class ScrapeEngine {
             if (tmdbId <= 0 && imdbId != null && !imdbId.isEmpty()) {
                 tmdbId = tmdb.findMovieByImdb(imdbId);
                 if (tmdbId <= 0) {
-                    return preserve ? Result.PRESERVED : Result.REVIEW;
+                    return new Outcome(preserve ? Result.PRESERVED : Result.REVIEW, subtitleQuery);
                 }
             }
         }
         if (preserve) {
             // Existing metadata without an identity cannot safely be used to backfill its artwork.
             if (existingIds.tmdbId <= 0 && existingIds.imdbId == null) {
-                return Result.PRESERVED;
+                return new Outcome(Result.PRESERVED, subtitleQuery);
             }
             int trustedId = existingIds.tmdbId > 0 ? existingIds.tmdbId : tmdb.findMovieByImdb(existingIds.imdbId);
             if (trustedId <= 0 || (tmdbId > 0 && tmdbId != trustedId)
                     || hasConflictingIds(sidecars, existingIds, trustedId)) {
-                return Result.PRESERVED;
+                return new Outcome(Result.PRESERVED, subtitleQuery);
             }
             tmdbId = trustedId;
         }
@@ -89,11 +102,12 @@ final class ScrapeEngine {
                 tmdbId = confidentMatch(tmdb.search(movie.alternateTitle, movie.alternateYear), movie.year);
             }
             if (tmdbId <= 0) {
-                return Result.REVIEW;
+                return new Outcome(Result.REVIEW, subtitleQuery);
             }
         }
 
         JSONObject details = tmdb.details(tmdbId);
+        subtitleQuery = new SubtitleQuery(storage, movie, details, tmdbId, null);
         Map<String, String> artwork = new HashMap<>();
         List<String> warnings = new ArrayList<>();
         for (String type : TYPES) {
@@ -162,9 +176,9 @@ final class ScrapeEngine {
         }
         if (!warnings.isEmpty()) {
             progress.update("以下图片写入失败：" + String.join("、", warnings));
-            return Result.INCOMPLETE;
+            return new Outcome(Result.INCOMPLETE, subtitleQuery);
         }
-        return !preserve || artWritten > 0 ? Result.WRITTEN : Result.PRESERVED;
+        return new Outcome(!preserve || artWritten > 0 ? Result.WRITTEN : Result.PRESERVED, subtitleQuery);
     }
 
     private static int confidentMatch(List<TmdbClient.Candidate> results, int requiredYear) {
@@ -374,7 +388,26 @@ final class ScrapeEngine {
         }
     }
 
-    private List<NfoSidecar> readSidecars(MovieStorage.Movie movie) throws IOException {
+    static SubtitleQuery subtitleQuery(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
+        try {
+            return fallbackSubtitleQuery(storage, movie, readSidecars(storage, movie));
+        } catch (IOException unreadable) {
+            checkCancelled();
+            return new SubtitleQuery(storage, movie, null, 0, null);
+        }
+    }
+
+    private static SubtitleQuery fallbackSubtitleQuery(MovieStorage storage, MovieStorage.Movie movie,
+                                                       List<NfoSidecar> sidecars) {
+        Identifiers ids = preferredIds(sidecars);
+        if (movie.tmdbId > 0 || (movie.imdbId != null && !movie.imdbId.isEmpty())
+                || hasConflictingIds(sidecars, ids, ids.tmdbId)) {
+            return new SubtitleQuery(storage, movie, null, 0, null);
+        }
+        return new SubtitleQuery(storage, movie, null, ids.tmdbId, ids.imdbId);
+    }
+
+    private static List<NfoSidecar> readSidecars(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
         List<String> names = new ArrayList<>();
         names.add(movie.nfoName);
         names.addAll(movie.legacyNfoNames);
@@ -409,7 +442,7 @@ final class ScrapeEngine {
         return false;
     }
 
-    private Identifiers readIds(byte[] bytes) throws IOException {
+    private static Identifiers readIds(byte[] bytes) throws IOException {
         Identifiers ids = new Identifiers();
         try {
             XmlPullParser parser = Xml.newPullParser();
