@@ -53,6 +53,9 @@ public final class MovieStorage {
     private static final Pattern BARE_YEAR = Pattern.compile(
             "(?<![0-9])((?:18[89][0-9]|19[0-9]{2}|20[0-9]{2}))(?![0-9])"
     );
+    private static final Pattern FIRST_PART_SUFFIX = Pattern.compile(
+            "[\\p{Z}\\p{P}\\s]+part[\\p{Z}\\p{P}\\s]+(?:one|1|i|Ⅰ)[\\p{Z}\\p{P}\\s]*$",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
     private static final Pattern RELEASE_TAG = Pattern.compile(
             "(?i)(?:^|[ ._\\[（(【-])(?:[1248]k|[0-9]{3,4}[pi]|blu[ ._-]?ray|b[dr]rip|"
                     + "remux|uhd|web[ ._-]?(?:dl|rip)|hdtv|dvd[ ._-]?rip|hdr10\\+?|hdr|hevc|"
@@ -624,6 +627,11 @@ public final class MovieStorage {
     public static FileNameHints parseTitle(String input) {
         String raw = input == null ? "" : input.trim();
         return parseFolderTitle(isVideo(raw) ? stem(raw) : raw);
+    }
+
+    static String firstPartBaseTitle(String title) {
+        Matcher suffix = FIRST_PART_SUFFIX.matcher(title);
+        return suffix.find() ? title.substring(0, suffix.start()).trim() : "";
     }
 
     private static FileNameHints parseFolderTitle(String raw) {

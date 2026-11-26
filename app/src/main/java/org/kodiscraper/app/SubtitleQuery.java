@@ -38,11 +38,18 @@ final class SubtitleQuery {
                 imdbId = resolvedId;
             }
         }
+        year = releaseYear > 0 ? releaseYear : movie.year;
         aliases.add(movie.title);
+        if (details == null && year > 0) {
+            // Try the catalog title before the alternate file name within subtitle search limits.
+            aliases.add(MovieStorage.firstPartBaseTitle(movie.title));
+        }
         aliases.add(movie.alternateTitle);
+        if (details == null && year > 0) {
+            aliases.add(MovieStorage.firstPartBaseTitle(movie.alternateTitle));
+        }
         aliases.remove("");
         titles = new ArrayList<>(aliases);
-        year = releaseYear > 0 ? releaseYear : movie.year;
         this.tmdbId = tmdbId > 0 ? tmdbId : movie.tmdbId;
         this.imdbId = validImdb(imdbId) ? imdbId.toLowerCase(Locale.ROOT)
                 : validImdb(movie.imdbId) ? movie.imdbId.toLowerCase(Locale.ROOT) : "";

@@ -28,7 +28,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
@@ -49,9 +48,6 @@ public final class TmdbClient {
             "/[A-Za-z0-9_-]+\\.(jpe?g|png|webp|gif)", Pattern.CASE_INSENSITIVE);
     private static final Pattern YOUTUBE_ID = Pattern.compile("[a-zA-Z0-9_-]{11}");
     private static final Pattern BEARER_TOKEN = Pattern.compile("[A-Za-z0-9._~+/-]+=*");
-    private static final Pattern PART_ONE_SUFFIX = Pattern.compile(
-            "[\\p{Z}\\p{P}\\s]+part[\\p{Z}\\p{P}\\s]+(?:one|1|i|Ⅰ)[\\p{Z}\\p{P}\\s]*$",
-            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
     private static final String[] MOVIE_ART_GROUPS = {"posters", "backdrops", "logos"};
 
     private final String apiKey;
@@ -160,9 +156,8 @@ public final class TmdbClient {
 
         boolean firstIsConfident = confident(ranked, year, titleKey);
         if (!firstIsConfident && year > 0) {
-            Matcher suffix = PART_ONE_SUFFIX.matcher(query);
-            if (suffix.find()) {
-                String shortened = query.substring(0, suffix.start()).trim();
+            String shortened = MovieStorage.firstPartBaseTitle(query);
+            if (!shortened.isEmpty()) {
                 List<SearchHit> shortenedHits = new ArrayList<>();
                 SearchHit shortenedMatch = searchShortenedTitle(shortened, year, shortenedHits);
                 for (SearchHit hit : ranked) {
