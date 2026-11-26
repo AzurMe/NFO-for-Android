@@ -6,7 +6,7 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 ## 安装和刮削
 
-1. 从 Releases 的 **Assets** 下载 `KodiMovieScraper-1.1.0.apk` 或更新版本。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
+1. 从 Releases 的 **Assets** 下载最新的 `KodiMovieScraper-<版本>.apk`。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
 2. 打开应用，点 **设置搜索路径**，在系统文件夹选择器里选中 `内部存储 / Movies` 或其他可写目录，再授权访问。应用会记住该目录并扫描其子文件夹。
 3. 填入自己的 TMDB **API Key** 或 **API Read Access Token**，选好资料语言。凭据由 Android Keystore 保护并保存在本机。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
 4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入时会替换所选影片的同名 NFO 和图片。
