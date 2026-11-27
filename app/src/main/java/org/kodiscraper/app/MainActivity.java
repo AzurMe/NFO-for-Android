@@ -115,6 +115,7 @@ public final class MainActivity extends Activity {
     private EditText credential;
     private Spinner language;
     private Switch overwrite;
+    private Switch skipCompleted;
     private Switch actors;
     private Switch preferFolder;
     private Switch alternateFanart;
@@ -687,6 +688,10 @@ public final class MainActivity extends Activity {
         overwrite = option("更新已有 NFO 和图片", settings.getBoolean("overwrite", false));
         add(card, overwrite, 0);
         add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, appearance.muted, false), 2);
+        skipCompleted = option("跳过已刮削完成的电影", settings.getBoolean("skip_completed", false));
+        add(card, skipCompleted, 0);
+        add(card, text("本地已有可读取的 NFO、海报和背景图时跳过资料刮削。已开启的字幕下载仍会运行。",
+                12, appearance.muted, false), 2);
 
         add(card, text("Kodi 合集资料目录", 14, appearance.foreground, true), 12);
         collectionFolderName = text("", 13, appearance.muted, false);
@@ -944,10 +949,12 @@ public final class MainActivity extends Activity {
         if (!requireFolder()) {
             return;
         }
-        TmdbClient client = clientOrNotify();
+        boolean skip = skipCompleted.isChecked();
+        TmdbClient client = skip ? new TmdbClient(credential.getText().toString(), language()) : clientOrNotify();
         if (client == null) {
             return;
         }
+        if (skip) saveCredential();
         Uri selectedFolder = folder;
         Uri selectedCollection = collectionFolder;
         String selectedLanguage = language();
@@ -968,64 +975,82 @@ public final class MainActivity extends Activity {
             if (scanned.isEmpty()) {
                 return () -> finishWithLog("没有发现可刮削的电影文件");
             }
-            client.validate();
-            post(() -> {
-                apiVerified = true;
-                updateUi();
-            });
             MovieStorage collections = selectedCollection == null ? null
                     : new MovieStorage(getApplicationContext(), selectedCollection);
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, replace, downloadActors, downloadAlternate);
             Batch batch = new Batch();
             SubtitleBatch subtitleBatch = new SubtitleBatch();
+            boolean validated = false;
             for (MovieStorage.Movie movie : scanned) {
                 ScrapeEngine.checkCancelled();
                 int index = ++batch.started;
                 post(() -> setProgress(index, scanned.size(), movie.title));
-                SubtitleQuery subtitleQuery = null;
-                try {
-                    ScrapeEngine.Outcome scraped = engine.scrape(movie, 0,
-                            message -> post(() -> note(movie.relativePath + " · " + message)));
-                    ScrapeEngine.Result result = scraped.result;
-                    subtitleQuery = scraped.subtitleQuery;
-                    batch.count(result);
+                boolean local = skip && engine.isCompleteLocally(movie);
+                if (!local && !validated) {
+                    client.validate();
+                    validated = true;
                     post(() -> {
-                        if (result == ScrapeEngine.Result.REVIEW) {
-                            needsReview.add(movie.relativePath);
-                        }
-                        note(resultLabel(result) + " · " + movie.relativePath);
+                        apiVerified = true;
+                        updateUi();
                     });
-                } catch (IOException problem) {
-                    ScrapeEngine.checkCancelled();
-                    if (shouldStopBatch(problem)) {
-                        String summary = batch.summary(index - 1, scanned.size());
-                        post(() -> note(summary));
-                        throw problem;
-                    }
-                    if (problem instanceof TmdbClient.HttpException
-                            && ((TmdbClient.HttpException) problem).statusCode == 404) {
-                        batch.count(ScrapeEngine.Result.REVIEW);
-                        post(() -> {
-                            needsReview.add(movie.relativePath);
-                            note("未找到资料，请手动匹配 · " + movie.relativePath);
-                        });
-                    } else {
-                        batch.failed++;
-                        post(() -> note("失败 · " + movie.relativePath + " · " + errorText(problem)));
-                    }
                 }
-                if (subtitles != null) {
-                    if (subtitleQuery == null) {
-                        subtitleQuery = ScrapeEngine.subtitleQuery(storage, movie);
+                try (SubtitleWork work = startSubtitles(subtitles, storage, movie, 0)) {
+                    SubtitleQuery match = null;
+                    if (local) {
+                        batch.skipped++;
+                        post(() -> note("已跳过（本地资料齐全） · " + movie.relativePath));
+                    } else {
+                        match = scrapeBatchMovie(engine, movie, work, batch, scanned.size());
                     }
-                    downloadSubtitles(subtitles, subtitleQuery, subtitleBatch);
+                    if (work != null) {
+                        work.matched(match == null ? ScrapeEngine.subtitleQuery(storage, movie) : match);
+                        recordSubtitles(movie, subtitleBatch, work::result);
+                    }
                 }
             }
             String summary = batch.summary(scanned.size(), scanned.size())
                     + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
             return () -> finishWithLog(summary);
         });
+    }
+
+    private SubtitleQuery scrapeBatchMovie(ScrapeEngine engine, MovieStorage.Movie movie, SubtitleWork work,
+                                            Batch batch, int total) throws IOException {
+        try {
+            ScrapeEngine.Outcome scraped = engine.scrape(movie, 0,
+                    message -> post(() -> note(movie.relativePath + " · " + message)),
+                    work == null ? query -> {} : work::matched);
+            batch.count(scraped.result);
+            post(() -> {
+                if (scraped.result == ScrapeEngine.Result.REVIEW) needsReview.add(movie.relativePath);
+                note(resultLabel(scraped.result) + " · " + movie.relativePath);
+            });
+            return scraped.subtitleQuery;
+        } catch (IOException problem) {
+            ScrapeEngine.checkCancelled();
+            if (shouldStopBatch(problem)) {
+                String summary = batch.summary(batch.started - 1, total);
+                post(() -> note(summary));
+                throw problem;
+            }
+            if (problem instanceof TmdbClient.HttpException http && http.statusCode == 404) {
+                batch.count(ScrapeEngine.Result.REVIEW);
+                post(() -> {
+                    needsReview.add(movie.relativePath);
+                    note("未找到资料，请手动匹配 · " + movie.relativePath);
+                });
+            } else {
+                batch.failed++;
+                post(() -> note("失败 · " + movie.relativePath + " · " + errorText(problem)));
+            }
+            return null;
+        }
+    }
+
+    private static SubtitleWork startSubtitles(SubtitleScraper scraper, MovieStorage storage,
+                                               MovieStorage.Movie movie, int selectedId) {
+        return scraper == null ? null : new SubtitleWork(scraper, new SubtitleQuery(storage, movie, null, selectedId, null));
     }
 
     private SubtitleScraper subtitleScraper() {
@@ -1051,20 +1076,25 @@ public final class MainActivity extends Activity {
                 MovieStorage.Movie movie = scanned.get(index);
                 int position = index + 1;
                 post(() -> setProgress(position, scanned.size(), "字幕 · " + movie.title));
-                downloadSubtitles(subtitles, ScrapeEngine.subtitleQuery(storage, movie), batch);
+                SubtitleQuery query = ScrapeEngine.subtitleQuery(storage, movie);
+                recordSubtitles(movie, batch, () -> subtitles.download(query));
             }
             String summary = batch.summary();
             return () -> finishWithLog(summary);
         });
     }
 
-    private void downloadSubtitles(SubtitleScraper scraper, SubtitleQuery query, SubtitleBatch batch)
+    private interface SubtitleResult {
+        SubtitleScraper.Outcome get() throws IOException;
+    }
+
+    private void recordSubtitles(MovieStorage.Movie movie, SubtitleBatch batch, SubtitleResult download)
             throws IOException {
         try {
-            SubtitleScraper.Outcome result = scraper.download(query);
+            SubtitleScraper.Outcome result = download.get();
             batch.written += result.written;
             batch.duplicates += result.duplicates;
-            String moviePath = query.movie.relativePath;
+            String moviePath = movie.relativePath;
             for (SubtitleScraper.ProviderFailure failure : result.providerFailures) {
                 post(() -> note("字幕来源失败 · " + failure.source() + " · " + moviePath + " · " + failure.message()));
             }
@@ -1087,7 +1117,7 @@ public final class MainActivity extends Activity {
         } catch (IOException problem) {
             ScrapeEngine.checkCancelled();
             batch.failed++;
-            post(() -> note("字幕下载失败 · " + query.movie.relativePath + " · " + errorText(problem)));
+            post(() -> note("字幕下载失败 · " + movie.relativePath + " · " + errorText(problem)));
         }
     }
 
@@ -1287,17 +1317,22 @@ public final class MainActivity extends Activity {
                     : new MovieStorage(getApplicationContext(), selectedCollection);
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, true, downloadActors, downloadAlternate);
-            ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> post(() -> note(message)));
-            ScrapeEngine.Result result = scraped.result;
             SubtitleBatch batch = new SubtitleBatch();
-            if (subtitles != null) {
-                downloadSubtitles(subtitles, scraped.subtitleQuery, batch);
+            ScrapeEngine.Result result;
+            try (SubtitleWork work = startSubtitles(subtitles, storage, movie, id)) {
+                ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> post(() -> note(message)),
+                        work == null ? query -> {} : work::matched);
+                result = scraped.result;
+                post(() -> note(resultLabel(result) + " · " + movie.relativePath));
+                if (work != null) {
+                    work.matched(scraped.subtitleQuery);
+                    recordSubtitles(movie, batch, work::result);
+                }
             }
             return () -> {
                 needsReview.remove(movie.relativePath);
                 apiVerified = true;
                 runState.setText(resultLabel(result));
-                note(resultLabel(result) + " · " + movie.relativePath);
                 if (subtitles != null) {
                     note(batch.summary());
                 }
@@ -1353,6 +1388,7 @@ public final class MainActivity extends Activity {
                 .putBoolean("alternate_fanart", alternateFanart.isChecked())
                 .putBoolean("auto_subtitles", autoSubtitles.isChecked())
                 .putBoolean("prefer_folder", preferFolder.isChecked())
+                .putBoolean("skip_completed", skipCompleted.isChecked())
                 .putBoolean("overwrite", overwrite.isChecked()).apply();
     }
 
@@ -1505,6 +1541,7 @@ public final class MainActivity extends Activity {
         pickCollectionFolder.setEnabled(!busy);
         clearCollectionFolder.setEnabled(!busy);
         overwrite.setEnabled(!busy);
+        skipCompleted.setEnabled(!busy);
         preferFolder.setEnabled(!busy);
         language.setEnabled(!busy);
         start.setEnabled(!busy || !stopped);
@@ -1541,7 +1578,9 @@ public final class MainActivity extends Activity {
     }
 
     private void updateLog(List<String> entries) {
-        log.setText(String.join("\n", entries));
+        List<String> chronological = new ArrayList<>(entries);
+        Collections.reverse(chronological);
+        log.setText(String.join("\n", chronological));
         log.setVisibility(entries.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
@@ -1553,7 +1592,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.6.2", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.7.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -1609,6 +1648,7 @@ public final class MainActivity extends Activity {
         int written;
         int incomplete;
         int preserved;
+        int skipped;
         int review;
         int failed;
 
@@ -1623,7 +1663,7 @@ public final class MainActivity extends Activity {
 
         String summary(int completed, int total) {
             return "处理 " + completed + "/" + total + " 部 · 写入 " + written + " · 待补图 "
-                    + incomplete + " · 保留 " + preserved + " · 待确认 " + review + " · 失败 " + failed;
+                    + incomplete + " · 保留 " + preserved + " · 跳过 " + skipped + " · 待确认 " + review + " · 失败 " + failed;
         }
     }
 

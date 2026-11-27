@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 final class ScrapeEngine {
     static final int ACTOR_LIMIT = 20;
@@ -65,7 +66,28 @@ final class ScrapeEngine {
         this.alternateFanart = alternateFanart;
     }
 
+    boolean isCompleteLocally(MovieStorage.Movie movie) throws IOException {
+        try {
+            List<NfoSidecar> sidecars = readSidecars(storage, movie);
+            return !sidecars.isEmpty() && sidecars.get(0).ids.fullMovie
+                    && readableArtwork(movie, "poster") && readableArtwork(movie, "fanart");
+        } catch (IOException unreadable) {
+            checkCancelled();
+            return false;
+        }
+    }
+
+    private boolean readableArtwork(MovieStorage.Movie movie, String type) throws IOException {
+        String name = findArtwork(movie, type, movie.singleMovieInDirectory);
+        return name != null && storage.hasImageDimensions(storage.find(movie.directory, name));
+    }
+
     Outcome scrape(MovieStorage.Movie movie, int selectedId, Progress progress) throws IOException {
+        return scrape(movie, selectedId, progress, query -> {});
+    }
+
+    Outcome scrape(MovieStorage.Movie movie, int selectedId, Progress progress,
+                   Consumer<SubtitleQuery> subtitleMatch) throws IOException {
         checkCancelled();
         List<NfoSidecar> sidecars = readSidecars(storage, movie);
         boolean preserve = !sidecars.isEmpty() && !overwrite;
@@ -108,6 +130,7 @@ final class ScrapeEngine {
 
         JSONObject details = tmdb.details(tmdbId);
         subtitleQuery = new SubtitleQuery(storage, movie, details, tmdbId, null);
+        subtitleMatch.accept(subtitleQuery);
         Map<String, String> artwork = new HashMap<>();
         List<String> warnings = new ArrayList<>();
         for (String type : TYPES) {
@@ -313,9 +336,13 @@ final class ScrapeEngine {
     }
 
     private String findArtwork(MovieStorage.Movie movie, String type) throws IOException {
+        return findArtwork(movie, type, !overwrite && movie.singleMovieInDirectory);
+    }
+
+    private String findArtwork(MovieStorage.Movie movie, String type, boolean allowFolderName) throws IOException {
         String named = movie.artworkName(type, "jpg");
         String image = findImage(storage, movie.directory, named.substring(0, named.length() - 4));
-        if (image == null && !overwrite && movie.singleMovieInDirectory) {
+        if (image == null && allowFolderName) {
             image = findImage(storage, movie.directory, type);
         }
         return image;
@@ -448,16 +475,23 @@ final class ScrapeEngine {
             XmlPullParser parser = Xml.newPullParser();
             parser.setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false);
             parser.setInput(new ByteArrayInputStream(bytes), null);
+            boolean titled = false;
+            boolean closed = false;
             for (int event = parser.getEventType(); event != XmlPullParser.END_DOCUMENT; event = parser.next()) {
                 if (event == XmlPullParser.START_TAG && parser.getDepth() == 1
                         && !"movie".equalsIgnoreCase(parser.getName())) {
-                    break;
+                    return ids;
+                }
+                if (event == XmlPullParser.END_TAG && parser.getDepth() == 1) {
+                    closed = true;
                 }
                 if (event != XmlPullParser.START_TAG || parser.getDepth() != 2) {
                     continue;
                 }
                 String tag = parser.getName();
-                if (tag.equals("uniqueid")) {
+                if (tag.equals("title")) {
+                    titled |= !parser.nextText().trim().isEmpty();
+                } else if (tag.equals("uniqueid")) {
                     String type = parser.getAttributeValue(null, "type");
                     String value = parser.nextText().trim();
                     if ("tmdb".equalsIgnoreCase(type)) {
@@ -477,6 +511,7 @@ final class ScrapeEngine {
                     }
                 }
             }
+            ids.fullMovie = titled && closed;
         } catch (Exception ignored) {
             checkCancelled();
             // Old NFO files may be plain scraper URLs or use malformed XML.
@@ -527,6 +562,7 @@ final class ScrapeEngine {
     private static final class Identifiers {
         int tmdbId;
         String imdbId;
+        boolean fullMovie;
     }
 
     private static final class NfoSidecar {

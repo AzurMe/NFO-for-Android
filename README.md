@@ -22,6 +22,7 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 3. 填入自己的 TMDB **API Key** 或 **API Read Access Token**，选好资料语言。凭据由 Android Keystore 保护并保存在本机。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
 4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
 5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
+6. 想略过已有资料的电影时，在 **刮削设置** 开启 **跳过已刮削完成的电影**。一键刮削会检查有效的电影 NFO 和可读取的海报、背景图，两项开关同时开启时会先判断是否跳过。若要补演员头像、备用图或其他附加素材，可关闭跳过开关后再运行。
 
 **刮削记录**显示本次任务的进展，开始新任务时会清空这一栏。点旁边的 **历史日志** 可查看保存在设备上的最近 200 条记录，重启应用后仍可查看。
 
@@ -32,6 +33,8 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 ## 下载中文字幕
 
 在 **中文字幕** 区开启 **随一键刮削和手动匹配下载**，或点 **仅下载字幕** 给已有电影补字幕。仅下载字幕可独立运行，无需填写 TMDB 凭据。
+
+开启随任务下载后，影片资料和字幕可并行处理。每部影片的记录先显示资料结果，再显示字幕结果。被跳过资料刮削的电影仍可下载字幕。
 
 应用按以下顺序查找，每部电影从第一个有可用结果的来源下载最多 3 条。片名匹配的结果可在 Kodi 播放时切换，方便选择与片源时间轴最合适的一条。
 
@@ -84,6 +87,11 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.7.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.7.0)
+
+- 新增 **跳过已刮削完成的电影** 开关，通过本地 NFO、海报和背景图判断资料是否齐全。
+- 影片资料和字幕可并行处理，按每部影片先记录资料结果，再记录字幕来源和结果。
 
 ### [v1.6.2](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.6.2)
 

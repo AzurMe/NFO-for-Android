@@ -24,9 +24,21 @@ final class SubtitleScraper {
     }
 
     Outcome download(SubtitleQuery query) throws IOException {
+        return download(query, () -> query);
+    }
+
+    interface MatchedQuery {
+        SubtitleQuery get() throws IOException;
+    }
+
+    Outcome download(SubtitleQuery local, MatchedQuery matched) throws IOException {
         List<ProviderFailure> problems = new ArrayList<>();
-        for (Provider provider : providers) {
+        SubtitleQuery query = local;
+        for (int index = 0; index < providers.size(); index++) {
             ScrapeEngine.checkCancelled();
+            // Shooter matches the video fingerprint. The remaining providers use the resolved film identity.
+            if (index == 1) query = matched.get();
+            Provider provider = providers.get(index);
             List<SubtitleFiles.Track> tracks;
             try {
                 tracks = provider.source.find(query);

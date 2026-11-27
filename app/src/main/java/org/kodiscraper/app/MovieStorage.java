@@ -2,6 +2,7 @@ package org.kodiscraper.app;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.graphics.BitmapFactory;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
@@ -328,7 +329,7 @@ public final class MovieStorage {
         return candidates;
     }
 
-    public Entry find(Directory directory, String name) throws IOException {
+    public synchronized Entry find(Directory directory, String name) throws IOException {
         checkCancelled();
         if (directory.children == null) {
             load(directory);
@@ -336,7 +337,7 @@ public final class MovieStorage {
         return directory.lookup(name);
     }
 
-    public List<Entry> list(Directory directory) throws IOException {
+    public synchronized List<Entry> list(Directory directory) throws IOException {
         load(directory);
         return new ArrayList<>(directory.children.values());
     }
@@ -354,7 +355,7 @@ public final class MovieStorage {
         }
     }
 
-    public Directory subdirectory(Directory directory, String name) throws IOException {
+    public synchronized Directory subdirectory(Directory directory, String name) throws IOException {
         validateName(name);
         Entry existing = find(directory, name);
         if (existing instanceof Directory) {
@@ -393,7 +394,21 @@ public final class MovieStorage {
         }
     }
 
-    public boolean write(Directory directory, String name, String mimeType, byte[] data, boolean overwrite)
+    boolean hasImageDimensions(Entry entry) throws IOException {
+        checkCancelled();
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        try (InputStream input = resolver.openInputStream(entry.uri)) {
+            if (input == null) return false;
+            BitmapFactory.decodeStream(input, null, options);
+            return options.outWidth > 0 && options.outHeight > 0;
+        } catch (IOException | RuntimeException unreadable) {
+            checkCancelled();
+            return false;
+        }
+    }
+
+    public synchronized boolean write(Directory directory, String name, String mimeType, byte[] data, boolean overwrite)
             throws IOException {
         validateName(name);
         if (isVideo(name)) {
