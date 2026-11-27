@@ -41,7 +41,7 @@ import java.util.regex.Pattern;
 
 import javax.net.ssl.SSLException;
 
-public final class TmdbClient {
+public final class TmdbClient implements MovieMetadataSource {
     private static final String API_BASE = "https://api.themoviedb.org/3";
     private static final String IMAGE_BASE = "https://image.tmdb.org/t/p/";
     private static final String DIAGNOSTIC_IMAGE = IMAGE_BASE + "w92/1E5baAaEse26fej7uHcjOgEE2t2.jpg";
@@ -648,7 +648,7 @@ public final class TmdbClient {
         return first.score - second.score >= (year > 0 ? 10 : 12);
     }
 
-    private static String normalizedTitle(String title) {
+    static String normalizedTitle(String title) {
         String text = Normalizer.normalize(simplifyChinese(title), Normalizer.Form.NFKD)
                 .toLowerCase(Locale.ROOT);
         StringBuilder normalized = new StringBuilder(text.length());
@@ -1205,13 +1205,13 @@ public final class TmdbClient {
         }
     }
 
-    public static final class HttpException extends IOException {
+    public static final class HttpException extends MovieMetadataSource.HttpError {
         private static final long serialVersionUID = 1L;
         public final int statusCode;
         private final long retryDelayMillis;
 
         private HttpException(int statusCode, boolean api, long retryDelayMillis) {
-            super(errorMessage(statusCode, api));
+            super(statusCode, errorMessage(statusCode, api));
             this.statusCode = statusCode;
             this.retryDelayMillis = retryDelayMillis;
         }
@@ -1273,6 +1273,17 @@ public final class TmdbClient {
             this.overview = hit.overview;
             this.posterPath = hit.posterPath;
             this.score = hit.score;
+            this.confident = confident;
+        }
+
+        Candidate(int id, int year, String title, String originalTitle, String overview, boolean confident) {
+            this.id = id;
+            this.year = year;
+            this.title = title;
+            this.originalTitle = originalTitle;
+            this.overview = overview;
+            this.posterPath = "";
+            this.score = 0;
             this.confident = confident;
         }
     }

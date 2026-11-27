@@ -42,7 +42,7 @@ final class KodiNfo {
     ) throws IOException {
         String title = first(text(movie, "title"), text(movie, "original_title"));
         if (title.isEmpty()) {
-            throw new IOException("TMDB 电影资料缺少标题");
+            throw new IOException("电影资料缺少标题");
         }
 
         Locale locale = Locale.forLanguageTag(language == null ? "" : language);
@@ -62,6 +62,8 @@ final class KodiNfo {
 
         String premiere = premiere(movie);
         xml.tag("premiered", premiere);
+        int year = movie.optInt("year");
+        if (premiere.isEmpty() && year >= 1870 && year <= 2100) xml.tag("year", Integer.toString(year));
         xml.tag("mpaa", certification(movie, country));
         writeIds(xml, movie);
         writeRating(xml, movie);
@@ -110,12 +112,13 @@ final class KodiNfo {
         String imdb = first(text(external, "imdb_id"), text(movie, "imdb_id"));
         String tvdb = text(external, "tvdb_id");
         String wikidata = text(external, "wikidata_id");
+        boolean tvdbDefault = "tvdb".equals(text(movie, "metadata_source")) && !tvdb.isEmpty();
         if (tmdb > 0) {
-            xml.tag("uniqueid", Integer.toString(tmdb), "type", "tmdb", "default", "true");
+            xml.tag("uniqueid", Integer.toString(tmdb), "type", "tmdb", "default", Boolean.toString(!tvdbDefault));
         }
-        xml.tag("uniqueid", imdb, "type", "imdb", "default", Boolean.toString(tmdb <= 0));
+        xml.tag("uniqueid", imdb, "type", "imdb", "default", Boolean.toString(!tvdbDefault && tmdb <= 0));
         xml.tag("uniqueid", tvdb, "type", "tvdb", "default",
-                Boolean.toString(tmdb <= 0 && imdb.isEmpty()));
+                Boolean.toString(tvdbDefault || (tmdb <= 0 && imdb.isEmpty())));
         xml.tag("uniqueid", wikidata, "type", "wikidata", "default",
                 Boolean.toString(tmdb <= 0 && imdb.isEmpty() && tvdb.isEmpty()));
     }
@@ -318,7 +321,7 @@ final class KodiNfo {
     }
 
     private static String imageUrl(String size, String path) {
-        return IMAGE_PATH.matcher(path).matches() ? TMDB_IMAGE_BASE + size + path : "";
+        return IMAGE_PATH.matcher(path).matches() ? TMDB_IMAGE_BASE + size + path : TvdbMovie.imageUrl(path);
     }
 
     private static String premiere(JSONObject movie) {

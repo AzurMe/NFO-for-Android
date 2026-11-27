@@ -28,6 +28,9 @@ final class SubtitleQuery {
             String date = details.optString("release_date", "");
             if (date.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) {
                 releaseYear = Integer.parseInt(date.substring(0, 4));
+            } else {
+                int year = details.optInt("year");
+                if (year >= 1870 && year <= 2100) releaseYear = year;
             }
             JSONObject external = details.optJSONObject("external_ids");
             String resolvedId = external == null ? "" : external.optString("imdb_id", "");

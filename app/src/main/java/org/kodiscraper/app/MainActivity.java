@@ -70,7 +70,7 @@ public final class MainActivity extends Activity {
     private final Set<String> needsReview = new HashSet<>();
     private volatile boolean stopped;
     private volatile Thread worker;
-    private TmdbClient activeClient;
+    private MovieMetadataSource activeClient;
     private boolean busy;
     private boolean apiVerified;
     private Uri folder;
@@ -122,6 +122,12 @@ public final class MainActivity extends Activity {
     private Switch autoSubtitles;
     private LinearLayout logPanel;
     private String savedCredential = "";
+    private String savedTvdbKey = "";
+    private String savedTvdbPin = "";
+    private boolean tvdbSupplement;
+    private MovieMetadataSource.Provider metadataProvider;
+    private Button metadataSourceButton;
+    private LinearLayout tvdbOptions;
     private String savedAssrtToken = "";
     private String savedSubdlKey = "";
 
@@ -139,6 +145,11 @@ public final class MainActivity extends Activity {
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
+        savedTvdbKey = CredentialStore.read(settings, "tvdb");
+        savedTvdbPin = CredentialStore.read(settings, "tvdb_pin");
+        tvdbSupplement = settings.getBoolean("tvdb_supplement", false);
+        metadataProvider = "tvdb".equals(settings.getString("metadata_source", "tmdb"))
+                ? MovieMetadataSource.Provider.TVDB : MovieMetadataSource.Provider.TMDB;
         savedAssrtToken = CredentialStore.read(settings, "assrt");
         savedSubdlKey = CredentialStore.read(settings, "subdl");
         String savedFolder = settings.getString("folder", "");
@@ -534,11 +545,34 @@ public final class MainActivity extends Activity {
 
     private void addConnection(LinearLayout column) {
         LinearLayout card = card(column);
+        LinearLayout selection = horizontal();
+        selection.addView(text("影片资料来源", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        metadataSourceButton = button(metadataProvider.label, appearance.tint, appearance.accent);
+        metadataSourceButton.setContentDescription("选择影片资料来源 · " + metadataProvider.label);
+        metadataSourceButton.setMinHeight(dp(48));
+        metadataSourceButton.setOnClickListener(view -> selectMetadataSource());
+        selection.addView(metadataSourceButton);
+        add(card, selection, 0);
+        tvdbOptions = vertical();
+        LinearLayout tvdbButtons = horizontal();
+        Button setupTvdb = button("配置 TheTVDB", appearance.tint, appearance.accent);
+        setupTvdb.setOnClickListener(view -> configureTvdb());
+        tvdbButtons.addView(setupTvdb);
+        Button testTvdb = button("测试连接", appearance.tint, appearance.accent);
+        testTvdb.setContentDescription("测试 TheTVDB 连接");
+        testTvdb.setOnClickListener(view -> testTvdb());
+        LinearLayout.LayoutParams testSpace = new LinearLayout.LayoutParams(-2, dp(48));
+        testSpace.leftMargin = dp(8);
+        tvdbButtons.addView(testTvdb, testSpace);
+        add(tvdbOptions, tvdbButtons, 4);
+        add(tvdbOptions, text("电影推送继续使用下方的 TMDB 凭据。", 12, appearance.muted, false), 4);
+        tvdbOptions.setVisibility(metadataProvider == MovieMetadataSource.Provider.TVDB ? View.VISIBLE : View.GONE);
+        add(card, tvdbOptions, 0);
         LinearLayout heading = horizontal();
         heading.addView(text("TMDB 连接", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
         apiState = text("", 12, appearance.muted, true);
         heading.addView(apiState);
-        add(card, heading, 0);
+        add(card, heading, 12);
         LinearLayout input = horizontal();
         credential = field("API Key 或 Read Access Token",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -591,6 +625,65 @@ public final class MainActivity extends Activity {
         diagnosticReport.setLineSpacing(dp(3), 1f);
         diagnosticReport.setVisibility(View.GONE);
         add(card, diagnosticReport, 8);
+    }
+
+    private void selectMetadataSource() {
+        if (busy) return;
+        MovieMetadataSource.Provider[] choices = MovieMetadataSource.Provider.values();
+        String[] labels = {choices[0].label, choices[1].label};
+        new AlertDialog.Builder(this).setTitle("影片资料来源")
+                .setSingleChoiceItems(labels, metadataProvider.ordinal(), (dialog, index) -> {
+                    metadataProvider = choices[index];
+                    settings.edit().putString("metadata_source", metadataProvider.idType).apply();
+                    metadataSourceButton.setText(metadataProvider.label);
+                    metadataSourceButton.setContentDescription("选择影片资料来源 · " + metadataProvider.label);
+                    tvdbOptions.setVisibility(index == MovieMetadataSource.Provider.TVDB.ordinal() ? View.VISIBLE : View.GONE);
+                    dialog.dismiss();
+                }).setNegativeButton("取消", null).show();
+    }
+
+    private void configureTvdb() {
+        if (busy) return;
+        LinearLayout form = dialogContent();
+        TextView help = text("请使用自己的 TheTVDB v4 API Key。订阅密钥还需要对应的 PIN。\n"
+                + "https://www.thetvdb.com/dashboard/account/apikey", 13, appearance.muted, false);
+        Linkify.addLinks(help, Linkify.WEB_URLS);
+        add(form, help, 0);
+        EditText key = field("TheTVDB API Key", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        key.setSingleLine(true);
+        key.setSaveEnabled(false);
+        key.setText(savedTvdbKey);
+        add(form, key, 10);
+        EditText pin = field("订阅 PIN（如需）", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        pin.setSingleLine(true);
+        pin.setSaveEnabled(false);
+        pin.setText(savedTvdbPin);
+        add(form, pin, 8);
+        Switch supplement = option("使用已配置的 TMDB 补齐评分和合集", tvdbSupplement);
+        add(form, supplement, 6);
+        new AlertDialog.Builder(this).setTitle("配置 TheTVDB").setView(form).setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    savedTvdbKey = key.getText().toString().trim();
+                    savedTvdbPin = pin.getText().toString().trim();
+                    tvdbSupplement = supplement.isChecked();
+                    settings.edit().putBoolean("tvdb_supplement", tvdbSupplement).apply();
+                    boolean keyStored = CredentialStore.save(settings, "tvdb", savedTvdbKey);
+                    boolean pinStored = CredentialStore.save(settings, "tvdb_pin", savedTvdbPin);
+                    if (!keyStored || !pinStored) note("设备无法保存 TheTVDB 凭据，本次仍可使用。");
+                }).show();
+    }
+
+    private void testTvdb() {
+        if (busy) return;
+        if (savedTvdbKey.isEmpty()) {
+            configureTvdb();
+            return;
+        }
+        TvdbClient client = new TvdbClient(savedTvdbKey, savedTvdbPin, language());
+        begin(client, "正在检测 TheTVDB 连接…", () -> {
+            client.validate();
+            return () -> finishWithLog("TheTVDB API 已连通，凭据有效。");
+        });
     }
 
     private void addSubtitles(LinearLayout column) {
@@ -950,11 +1043,11 @@ public final class MainActivity extends Activity {
             return;
         }
         boolean skip = skipCompleted.isChecked();
-        TmdbClient client = skip ? new TmdbClient(credential.getText().toString(), language()) : clientOrNotify();
+        MovieMetadataSource client = skip ? createMetadataClient() : clientOrNotify();
         if (client == null) {
             return;
         }
-        if (skip) saveCredential();
+        if (skip && client.provider() == MovieMetadataSource.Provider.TMDB) saveCredential();
         Uri selectedFolder = folder;
         Uri selectedCollection = collectionFolder;
         String selectedLanguage = language();
@@ -965,7 +1058,7 @@ public final class MainActivity extends Activity {
         SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         persistOptions();
         needsReview.clear();
-        begin(client, "正在扫描目录…", () -> {
+        begin(client, "正在扫描目录… · " + client.provider().label, () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selectedFolder);
             List<MovieStorage.Movie> scanned = storage.scan(byFolder);
             post(() -> {
@@ -991,7 +1084,7 @@ public final class MainActivity extends Activity {
                     client.validate();
                     validated = true;
                     post(() -> {
-                        apiVerified = true;
+                        if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
                         updateUi();
                     });
                 }
@@ -1034,7 +1127,7 @@ public final class MainActivity extends Activity {
                 post(() -> note(summary));
                 throw problem;
             }
-            if (problem instanceof TmdbClient.HttpException http && http.statusCode == 404) {
+            if (problem instanceof MovieMetadataSource.HttpError http && http.statusCode == 404) {
                 batch.count(ScrapeEngine.Result.REVIEW);
                 post(() -> {
                     needsReview.add(movie.relativePath);
@@ -1204,7 +1297,7 @@ public final class MainActivity extends Activity {
         LinearLayout form = dialogContent();
         TextView source = text(movie.relativePath, 13, appearance.muted, false);
         add(form, source, 0);
-        EditText title = field("电影片名、tmdb:123 或 IMDb ID", InputType.TYPE_CLASS_TEXT);
+        EditText title = field("电影片名、" + metadataProvider.idType + ":123 或 IMDb ID", InputType.TYPE_CLASS_TEXT);
         title.setSingleLine(true);
         title.setText(currentTitle);
         add(form, title, 9);
@@ -1214,7 +1307,7 @@ public final class MainActivity extends Activity {
             year.setText(String.valueOf(currentYear));
         }
         add(form, year, 9);
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("查找 TMDB 影片")
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("查找 " + metadataProvider.label + " 影片")
                 .setView(form).setNegativeButton("取消", null).setPositiveButton("搜索", null).create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             String query = title.getText().toString().trim();
@@ -1222,7 +1315,7 @@ public final class MainActivity extends Activity {
                 title.setError("请输入片名或电影 ID");
                 return;
             }
-            TmdbClient client = clientOrNotify();
+            MovieMetadataSource client = clientOrNotify();
             if (client == null) {
                 dialog.dismiss();
                 return;
@@ -1233,12 +1326,14 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
-    private void searchManual(MovieStorage.Movie movie, String query, int year, TmdbClient client) {
+    private void searchManual(MovieStorage.Movie movie, String query, int year, MovieMetadataSource client) {
         begin(client, "正在查找影片…", () -> {
             String lower = query.toLowerCase(Locale.ROOT);
             int directId = 0;
-            if (lower.matches("(tmdb[: ]*)?[0-9]+")) {
-                directId = ScrapeEngine.parseId(lower.replaceFirst("^tmdb[: ]*", ""));
+            if (lower.matches("(" + client.provider().idType + "[: ]*)?[0-9]+")) {
+                directId = ScrapeEngine.parseId(lower.replaceFirst("^" + client.provider().idType + "[: ]*", ""));
+            } else if (lower.matches("tmdb[: ]*[0-9]+")) {
+                directId = client.findMovieByTmdb(ScrapeEngine.parseId(lower.replaceFirst("^tmdb[: ]*", "")));
             } else if (lower.matches("tt[0-9]+")) {
                 directId = client.findMovieByImdb(lower);
             } else {
@@ -1254,7 +1349,7 @@ public final class MainActivity extends Activity {
             String date = details.optString("release_date");
             String original = details.optString("original_title");
             return () -> showScraperDialog(() -> confirmManual(movie, id, candidateLabel(title, original,
-                    date.length() >= 4 ? date.substring(0, 4) : "", id), details.optString("overview")));
+                    date.length() >= 4 ? date.substring(0, 4) : "", id, client.provider()), details.optString("overview")));
         });
     }
 
@@ -1264,13 +1359,13 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("取消", null)
                 .setNeutralButton("修改搜索", (d, which) -> showQuery(movie, query, year));
         if (matches.isEmpty()) {
-            dialog.setMessage("没有候选结果。可以试试原名、调整年份或输入 TMDB ID。");
+            dialog.setMessage("没有候选结果。可以试试原名、调整年份或输入 " + metadataProvider.label + " ID。");
         } else {
             CharSequence[] labels = new CharSequence[matches.size()];
             for (int i = 0; i < matches.size(); i++) {
                 TmdbClient.Candidate candidate = matches.get(i);
                 labels[i] = candidateLabel(candidate.title, candidate.originalTitle,
-                        candidate.year > 0 ? String.valueOf(candidate.year) : "", candidate.id);
+                        candidate.year > 0 ? String.valueOf(candidate.year) : "", candidate.id, metadataProvider);
             }
             dialog.setItems(labels, (d, which) -> {
                 TmdbClient.Candidate candidate = matches.get(which);
@@ -1280,9 +1375,9 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
-    private static String candidateLabel(String title, String original, String year, int id) {
+    private static String candidateLabel(String title, String original, String year, int id, MovieMetadataSource.Provider provider) {
         String alternate = original == null || original.isEmpty() || original.equals(title) ? "" : original + "  ·  ";
-        return title + (year.isEmpty() ? "" : " (" + year + ")") + "\n" + alternate + "TMDB " + id;
+        return title + (year.isEmpty() ? "" : " (" + year + ")") + "\n" + alternate + provider.label + " " + id;
     }
 
     private void confirmManual(MovieStorage.Movie movie, int id, String label, String overview) {
@@ -1300,7 +1395,7 @@ public final class MainActivity extends Activity {
     }
 
     private void writeManual(MovieStorage.Movie movie, int id) {
-        TmdbClient client = clientOrNotify();
+        MovieMetadataSource client = clientOrNotify();
         if (client == null) {
             return;
         }
@@ -1311,7 +1406,7 @@ public final class MainActivity extends Activity {
         boolean downloadAlternate = alternateFanart.isChecked();
         SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         persistOptions();
-        begin(client, "正在刮削 " + movie.title, () -> {
+        begin(client, "正在刮削 " + movie.title + " · " + client.provider().label, () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             MovieStorage collections = selectedCollection == null ? null
                     : new MovieStorage(getApplicationContext(), selectedCollection);
@@ -1319,7 +1414,8 @@ public final class MainActivity extends Activity {
                     selectedLanguage, true, downloadActors, downloadAlternate);
             SubtitleBatch batch = new SubtitleBatch();
             ScrapeEngine.Result result;
-            try (SubtitleWork work = startSubtitles(subtitles, storage, movie, id)) {
+            int tmdbId = client.provider() == MovieMetadataSource.Provider.TMDB ? id : 0;
+            try (SubtitleWork work = startSubtitles(subtitles, storage, movie, tmdbId)) {
                 ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> post(() -> note(message)),
                         work == null ? query -> {} : work::matched);
                 result = scraped.result;
@@ -1331,7 +1427,7 @@ public final class MainActivity extends Activity {
             }
             return () -> {
                 needsReview.remove(movie.relativePath);
-                apiVerified = true;
+                if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
                 runState.setText(resultLabel(result));
                 if (subtitles != null) {
                     note(batch.summary());
@@ -1350,7 +1446,20 @@ public final class MainActivity extends Activity {
         return false;
     }
 
-    private TmdbClient clientOrNotify() {
+    private MovieMetadataSource createMetadataClient() {
+        String tmdbKey = credential.getText().toString().trim();
+        return metadataProvider == MovieMetadataSource.Provider.TVDB
+                ? new TvdbClient(savedTvdbKey, savedTvdbPin, language(), tvdbSupplement && !tmdbKey.isEmpty()
+                        ? new TmdbClient(tmdbKey, language()) : null)
+                : new TmdbClient(tmdbKey, language());
+    }
+
+    private MovieMetadataSource clientOrNotify() {
+        if (metadataProvider == MovieMetadataSource.Provider.TVDB) {
+            if (!savedTvdbKey.isEmpty()) return createMetadataClient();
+            configureTvdb();
+            return null;
+        }
         String value = credential.getText().toString().trim();
         if (value.isEmpty()) {
             credential.setError("请输入 TMDB API Key 或 Read Access Token");
@@ -1358,7 +1467,7 @@ public final class MainActivity extends Activity {
             return null;
         }
         saveCredential();
-        return new TmdbClient(value, language());
+        return createMetadataClient();
     }
 
     private void focusTmdbCredential() {
@@ -1405,11 +1514,11 @@ public final class MainActivity extends Activity {
         Runnable run() throws IOException;
     }
 
-    private void begin(TmdbClient client, String status, Task task) {
+    private void begin(MovieMetadataSource client, String status, Task task) {
         begin(client, status, false, task);
     }
 
-    private void begin(TmdbClient client, String status, boolean diagnostic, Task task) {
+    private void begin(MovieMetadataSource client, String status, boolean diagnostic, Task task) {
         if (busy) {
             return;
         }
@@ -1529,6 +1638,7 @@ public final class MainActivity extends Activity {
         }
         pickFolder.setEnabled(!busy);
         validate.setEnabled(!busy);
+        metadataSourceButton.setEnabled(!busy);
         manual.setEnabled(!busy);
         credential.setEnabled(!busy);
         showCredential.setEnabled(!busy);
@@ -1561,7 +1671,7 @@ public final class MainActivity extends Activity {
         String safe = SECRET_PARAMETER.matcher(message).replaceAll("$1[已隐藏]");
         safe = BEARER_VALUE.matcher(safe).replaceAll("$1[已隐藏]");
         String input = credential.getText().toString().trim();
-        for (String value : new String[]{input, savedCredential, savedAssrtToken, savedSubdlKey}) {
+        for (String value : new String[]{input, savedCredential, savedTvdbKey, savedTvdbPin, savedAssrtToken, savedSubdlKey}) {
             if (value.regionMatches(true, 0, "Bearer ", 0, 7)) {
                 value = value.substring(7).trim();
             }
@@ -1592,7 +1702,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.7.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.8.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -1604,14 +1714,18 @@ public final class MainActivity extends Activity {
         logoSpace.topMargin = dp(18);
         info.addView(logo, logoSpace);
         add(info, text("This product uses the TMDB API but is not endorsed or certified by TMDB.", 13, appearance.muted, false), 5);
+        TextView tvdb = text("Metadata and artwork provided by TheTVDB.com. https://www.thetvdb.com/",
+                13, appearance.muted, false);
+        Linkify.addLinks(tvdb, Linkify.WEB_URLS);
+        add(info, tvdb, 12);
         new AlertDialog.Builder(this).setTitle("关于").setView(info).setPositiveButton("关闭", null).show();
     }
 
     private static boolean shouldStopBatch(IOException problem) {
-        if (!(problem instanceof TmdbClient.HttpException)) {
+        if (!(problem instanceof MovieMetadataSource.HttpError http)) {
             return false;
         }
-        int code = ((TmdbClient.HttpException) problem).statusCode;
+        int code = http.statusCode;
         return code == 401 || code == 403 || code == 429;
     }
 

@@ -48,18 +48,18 @@ final class ScrapeEngine {
 
     private final MovieStorage storage;
     private final MovieStorage collectionStorage;
-    private final TmdbClient tmdb;
+    private final MovieMetadataSource source;
     private final String language;
     private final boolean overwrite;
     private final boolean actorImages;
     private final boolean alternateFanart;
     private final Set<Integer> savedCollections = new HashSet<>();
 
-    ScrapeEngine(MovieStorage storage, MovieStorage collectionStorage, TmdbClient tmdb,
+    ScrapeEngine(MovieStorage storage, MovieStorage collectionStorage, MovieMetadataSource source,
                  String language, boolean overwrite, boolean actorImages, boolean alternateFanart) {
         this.storage = storage;
         this.collectionStorage = collectionStorage;
-        this.tmdb = tmdb;
+        this.source = source;
         this.language = language;
         this.overwrite = overwrite;
         this.actorImages = actorImages;
@@ -92,45 +92,59 @@ final class ScrapeEngine {
         List<NfoSidecar> sidecars = readSidecars(storage, movie);
         boolean preserve = !sidecars.isEmpty() && !overwrite;
         Identifiers existingIds = preferredIds(sidecars);
-        SubtitleQuery subtitleQuery = selectedId > 0
+        boolean tvdb = source.provider() == MovieMetadataSource.Provider.TVDB;
+        int tvdbLocal = tvdb && (selectedId <= 0 || preserve) ? localProviderId(existingIds) : 0;
+        SubtitleQuery subtitleQuery = selectedId > 0 && !tvdb
                 ? new SubtitleQuery(storage, movie, null, selectedId, null)
                 : fallbackSubtitleQuery(storage, movie, sidecars);
-        int tmdbId = selectedId;
-        if (tmdbId <= 0) {
-            tmdbId = movie.tmdbId > 0 ? movie.tmdbId : existingIds.tmdbId;
-            String imdbId = movie.imdbId == null || movie.imdbId.isEmpty() ? existingIds.imdbId : movie.imdbId;
-            if (tmdbId <= 0 && imdbId != null && !imdbId.isEmpty()) {
-                tmdbId = tmdb.findMovieByImdb(imdbId);
-                if (tmdbId <= 0) {
-                    return new Outcome(preserve ? Result.PRESERVED : Result.REVIEW, subtitleQuery);
+        int sourceId = selectedId;
+        if (sourceId <= 0) {
+            if (tvdb) {
+                sourceId = tvdbLocal;
+                if (sourceId <= 0 && movie.imdbId != null) sourceId = source.findMovieByImdb(movie.imdbId);
+                if (sourceId <= 0 && movie.tmdbId > 0) sourceId = source.findMovieByTmdb(movie.tmdbId);
+            } else {
+                sourceId = movie.tmdbId > 0 ? movie.tmdbId : existingIds.tmdbId;
+                String imdbId = movie.imdbId == null || movie.imdbId.isEmpty() ? existingIds.imdbId : movie.imdbId;
+                if (sourceId <= 0 && imdbId != null && !imdbId.isEmpty()) {
+                    sourceId = source.findMovieByImdb(imdbId);
+                    if (sourceId <= 0) return new Outcome(preserve ? Result.PRESERVED : Result.REVIEW, subtitleQuery);
                 }
             }
         }
         if (preserve) {
             // Existing metadata without an identity cannot safely be used to backfill its artwork.
-            if (existingIds.tmdbId <= 0 && existingIds.imdbId == null) {
+            int trustedId = tvdb ? tvdbLocal : localProviderId(existingIds);
+            if (trustedId <= 0 || (sourceId > 0 && sourceId != trustedId)
+                    || hasConflictingIds(sidecars, existingIds, tvdb ? existingIds.tmdbId : trustedId)) {
                 return new Outcome(Result.PRESERVED, subtitleQuery);
             }
-            int trustedId = existingIds.tmdbId > 0 ? existingIds.tmdbId : tmdb.findMovieByImdb(existingIds.imdbId);
-            if (trustedId <= 0 || (tmdbId > 0 && tmdbId != trustedId)
-                    || hasConflictingIds(sidecars, existingIds, trustedId)) {
-                return new Outcome(Result.PRESERVED, subtitleQuery);
-            }
-            tmdbId = trustedId;
+            sourceId = trustedId;
         }
-        if (tmdbId <= 0) {
-            tmdbId = confidentMatch(tmdb.search(movie.title, movie.year), 0);
-            if (tmdbId <= 0 && !movie.alternateTitle.isEmpty()) {
-                tmdbId = confidentMatch(tmdb.search(movie.alternateTitle, movie.alternateYear), movie.year);
+        if (sourceId <= 0) {
+            sourceId = confidentMatch(source.search(movie.title, movie.year), 0);
+            if (sourceId <= 0 && !movie.alternateTitle.isEmpty()) {
+                sourceId = confidentMatch(source.search(movie.alternateTitle, movie.alternateYear), movie.year);
             }
-            if (tmdbId <= 0) {
+            if (sourceId <= 0) {
                 return new Outcome(Result.REVIEW, subtitleQuery);
             }
         }
 
-        JSONObject details = tmdb.details(tmdbId);
-        subtitleQuery = new SubtitleQuery(storage, movie, details, tmdbId, null);
+        JSONObject details = source.details(sourceId);
+        if (tvdb && selectedId <= 0) {
+            int tmdbId = details.optInt("id");
+            String imdbId = TvdbMovie.text(details.optJSONObject("external_ids"), "imdb_id");
+            if ((movie.tmdbId > 0 && tmdbId > 0 && movie.tmdbId != tmdbId)
+                    || (preserve && existingIds.tmdbId > 0 && tmdbId > 0 && existingIds.tmdbId != tmdbId)
+                    || imdbConflict(movie.imdbId, imdbId) || (preserve && imdbConflict(existingIds.imdbId, imdbId))) {
+                return new Outcome(Result.REVIEW, subtitleQuery);
+            }
+        }
+        subtitleQuery = new SubtitleQuery(storage, movie, details, tvdb ? details.optInt("id") : sourceId, null);
         subtitleMatch.accept(subtitleQuery);
+        String supplementWarning = details.optString("supplement_warning");
+        if (!supplementWarning.isEmpty()) progress.update(supplementWarning);
         Map<String, String> artwork = new HashMap<>();
         List<String> warnings = new ArrayList<>();
         for (String type : TYPES) {
@@ -152,12 +166,16 @@ final class ScrapeEngine {
             updatedNfo = KodiNfo.preserveUserFields(xml.toByteArray(), previous);
         }
         int artWritten = 0;
+        List<String> unavailable = new ArrayList<>();
         for (int i = 0; i < TYPES.length; i++) {
             checkCancelled();
             String type = TYPES[i];
-            String path = tmdb.artwork(details, type);
+            String path = source.artwork(details, type);
             try {
                 String target = artwork.get(type);
+                if (tvdb && target == null && (path == null || path.isEmpty()) && (i == 0 || i == 1)) {
+                    unavailable.add(artworkLabel(type));
+                }
                 if ((target == null || overwrite) && path != null && !path.isEmpty()) {
                     target = target == null ? movie.artworkName(type, "clearlogo".equals(type) ? "png" : "jpg") : target;
                     if (writeImage(storage, movie.directory, target, path, SIZES[i])) {
@@ -199,9 +217,25 @@ final class ScrapeEngine {
         }
         if (!warnings.isEmpty()) {
             progress.update("以下图片写入失败：" + String.join("、", warnings));
+        }
+        if (!unavailable.isEmpty()) {
+            progress.update("TheTVDB 暂无以下图片：" + String.join("、", unavailable));
+        }
+        if (!warnings.isEmpty() || !unavailable.isEmpty()) {
             return new Outcome(Result.INCOMPLETE, subtitleQuery);
         }
         return new Outcome(!preserve || artWritten > 0 ? Result.WRITTEN : Result.PRESERVED, subtitleQuery);
+    }
+
+    private int localProviderId(Identifiers ids) throws IOException {
+        if (source.provider() == MovieMetadataSource.Provider.TMDB && ids.tmdbId > 0) return ids.tmdbId;
+        if (source.provider() == MovieMetadataSource.Provider.TVDB && ids.tvdbId > 0) return ids.tvdbId;
+        int matched = ids.imdbId == null ? 0 : source.findMovieByImdb(ids.imdbId);
+        return matched > 0 || ids.tmdbId <= 0 ? matched : source.findMovieByTmdb(ids.tmdbId);
+    }
+
+    private static boolean imdbConflict(String expected, String received) {
+        return expected != null && !expected.isEmpty() && !received.isEmpty() && !expected.equalsIgnoreCase(received);
     }
 
     private static int confidentMatch(List<TmdbClient.Candidate> results, int requiredYear) {
@@ -214,7 +248,7 @@ final class ScrapeEngine {
 
     private int saveAlternateFanart(MovieStorage.Movie movie, JSONObject details, List<String> warnings)
             throws IOException {
-        List<String> images = tmdb.alternateFanart(details, ALTERNATE_FANART_LIMIT);
+        List<String> images = source.alternateFanart(details, ALTERNATE_FANART_LIMIT);
         int written = 0;
         int failures = 0;
         for (int i = 0; i < images.size(); i++) {
@@ -245,8 +279,8 @@ final class ScrapeEngine {
             return 0;
         }
         String folder = MovieStorage.collectionFolderName(KodiNfo.collectionName(movie));
-        String poster = tmdb.collectionArtwork(movie, "poster");
-        String fanart = tmdb.collectionArtwork(movie, "fanart");
+        String poster = source.collectionArtwork(movie, "poster");
+        String fanart = source.collectionArtwork(movie, "fanart");
         if (folder.isEmpty() || (poster.isEmpty() && fanart.isEmpty())) {
             return 0;
         }
@@ -266,13 +300,13 @@ final class ScrapeEngine {
             return 0;
         }
         String name = type + ".jpg";
-        byte[] data = formattedImage(tmdb.image(path, size), name);
+        byte[] data = formattedImage(source.image(path, size), name);
         return collectionStorage.write(directory, name, mime(name), data, false) ? 1 : 0;
     }
 
     private boolean writeImage(MovieStorage targetStorage, MovieStorage.Directory directory, String name,
                                String path, String size) throws IOException {
-        byte[] data = formattedImage(tmdb.image(path, size), name);
+        byte[] data = formattedImage(source.image(path, size), name);
         return targetStorage.write(directory, name, mime(name), data, overwrite);
     }
 
@@ -293,7 +327,7 @@ final class ScrapeEngine {
             if (person == null) {
                 continue;
             }
-            String profile = tmdb.castProfile(person);
+            String profile = source.castProfile(person);
             String name = KodiNfo.personName(person);
             if (profile == null || profile.isEmpty() || name.isEmpty()) {
                 continue;
@@ -327,8 +361,8 @@ final class ScrapeEngine {
 
     private static void rethrowFatal(IOException problem) throws IOException {
         checkCancelled();
-        if (problem instanceof TmdbClient.HttpException) {
-            int code = ((TmdbClient.HttpException) problem).statusCode;
+        if (problem instanceof MovieMetadataSource.HttpError http) {
+            int code = http.statusCode;
             if (code == 401 || code == 403 || code == 429) {
                 throw problem;
             }
@@ -451,7 +485,7 @@ final class ScrapeEngine {
 
     private static Identifiers preferredIds(List<NfoSidecar> sidecars) {
         for (NfoSidecar sidecar : sidecars) {
-            if (sidecar.ids.tmdbId > 0 || sidecar.ids.imdbId != null) {
+            if (sidecar.ids.tmdbId > 0 || sidecar.ids.imdbId != null || sidecar.ids.tvdbId > 0) {
                 return sidecar.ids;
             }
         }
@@ -462,6 +496,7 @@ final class ScrapeEngine {
         for (NfoSidecar sidecar : sidecars) {
             Identifiers ids = sidecar.ids;
             if ((ids.tmdbId > 0 && ids.tmdbId != tmdbId)
+                    || (preferred.tvdbId > 0 && ids.tvdbId > 0 && ids.tvdbId != preferred.tvdbId)
                     || (preferred.imdbId != null && ids.imdbId != null && !preferred.imdbId.equals(ids.imdbId))) {
                 return true;
             }
@@ -496,6 +531,8 @@ final class ScrapeEngine {
                     String value = parser.nextText().trim();
                     if ("tmdb".equalsIgnoreCase(type)) {
                         ids.tmdbId = parseId(value);
+                    } else if ("tvdb".equalsIgnoreCase(type)) {
+                        ids.tvdbId = parseId(value);
                     } else if ("imdb".equalsIgnoreCase(type) && value.matches("tt[0-9]+")) {
                         ids.imdbId = value;
                     }
@@ -561,6 +598,7 @@ final class ScrapeEngine {
 
     private static final class Identifiers {
         int tmdbId;
+        int tvdbId;
         String imdbId;
         boolean fullMovie;
     }

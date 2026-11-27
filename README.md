@@ -1,6 +1,6 @@
 # NFO for Android
 
-NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选择本地电影目录后，应用用 TMDB 匹配影片，把 NFO 和图片写到对应视频旁边，也可以查找并下载中文字幕。应用默认使用简体中文，支持 Android 8.0（API 26）及以上版本。
+NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选择本地电影目录后，可用 TMDB 或 TheTVDB 匹配影片，把 NFO 和图片写到对应视频旁边，也可以查找并下载中文字幕。应用默认使用简体中文，支持 Android 8.0（API 26）及以上版本。
 
 [下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest) · [版本更新记录](#版本更新记录)
 
@@ -19,8 +19,8 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 
 1. 从 Releases 的 **Assets** 下载最新的 `KodiMovieScraper-<版本>.apk`。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
 2. 打开应用，点 **设置搜索路径**，在系统文件夹选择器里选中 `内部存储 / Movies` 或其他可写目录，再授权访问。应用会记住该目录并扫描其子文件夹。
-3. 填入自己的 TMDB **API Key** 或 **API Read Access Token**，选好资料语言。凭据由 Android Keystore 保护并保存在本机。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
-4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、TMDB ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
+3. 在 **影片资料来源** 选择 TMDB 或 TheTVDB，填入对应凭据并选好资料语言。凭据由 Android Keystore 保护并保存在本机。
+4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、所选来源的电影 ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
 5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
 6. 想略过已有资料的电影时，在 **刮削设置** 开启 **跳过已刮削完成的电影**。一键刮削会检查有效的电影 NFO 和可读取的海报、背景图，两项开关同时开启时会先判断是否跳过。若要补演员头像、备用图或其他附加素材，可关闭跳过开关后再运行。
 
@@ -29,6 +29,15 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 ### 连接检测
 
 **测试 TMDB 连接**可以在凭据栏留空时使用。它分别检测 `api.themoviedb.org` 和 `image.tmdb.org`，显示 HTTP 状态、耗时，以及 DNS、超时或 TLS 等错误。未带凭据的 API 请求收到 HTTP 401 表示服务器有响应。填入凭据后，另有一栏显示凭据校验结果。
+
+### 资料来源
+
+- **TMDB** 是默认来源。填写自己的 **API Key** 或 **API Read Access Token**。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
+- **TheTVDB** 可独立使用。选择后，点 **配置 TheTVDB**，填写自己的 **v4 API Key**，订阅密钥还需填写对应 **PIN**。用同卡片里的 **测试连接** 验证凭据。[TheTVDB 密钥设置](https://www.thetvdb.com/dashboard/account/apikey) · [TheTVDB API 文档](https://thetvdb.github.io/v4-api/)
+- 两个来源使用相同的 Kodi NFO 格式、图片命名和字幕流程。TheTVDB 的翻译、演职员和图片取决于该片在来源中的覆盖情况。缺少本地海报或背景图会提示待补。TheTVDB 的热度值不写入影片评分。需要评分和合集时，可在 **配置 TheTVDB** 启用 **使用已配置的 TMDB 补齐评分和合集**。应用会匹配影片编号后再补充这些字段，已有 NFO 评分仍会保留。
+- 切换资料来源后，需要重新生成旧 NFO 时可使用 **手动匹配影片**，或关闭 **跳过已刮削完成的电影** 并开启 **更新已有 NFO 和图片**。电影推送继续使用 TMDB。
+
+Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/)
 
 ## 下载中文字幕
 
@@ -87,6 +96,11 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.8.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.8.0)
+
+- 影片资料可以选择 TMDB 或 TheTVDB，按同一套规则生成 Kodi NFO 和本地图片。
+- TheTVDB 支持独立凭据和连接测试，可选用已配置的 TMDB 补齐评分和合集。
 
 ### [v1.7.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.7.0)
 
