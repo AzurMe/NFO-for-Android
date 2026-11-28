@@ -36,7 +36,7 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 使用 TMDB 时，同一凭据可同时处理最多 3 部待刮削影片。应用进程给 TMDB API 请求统一限速为约每秒 8 次，遇到 HTTP 429 会退避。TMDB 官方的限流会变化。TheTVDB 批量刮削按顺序执行。[TMDB 限流说明](https://developer.themoviedb.org/docs/rate-limiting)
 
-**刮削记录**和**字幕下载记录**显示本次任务的摘要。每部影片的结果集中放在片名下方并自动换行。绿色表示成功，红色标示失败。开始新任务时替换上一轮记录。
+**刮削记录**和**字幕下载记录**逐行显示发现的影片数、待处理数和结果。每部影片的结果集中放在片名下方并自动换行。绿色表示成功，红色标示失败。扫描和连接提示会被最新状态替换。关闭应用后重新打开，或开始新任务时，会清空上一轮记录。
 
 ### 连接检测
 
@@ -124,6 +124,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.19.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.19.0)
+
+- 重新打开应用时清空刮削记录和字幕下载记录。
+- 发现数量、待处理数量和结果分别显示，扫描和连接仅作为临时状态。
+- 电影刮削器和字幕下载器标题从 24sp 调整为 23sp。
 
 ### [v1.18.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.18.0)
 

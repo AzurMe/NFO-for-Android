@@ -184,7 +184,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.18.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.19.0 android_api=" + Build.VERSION.SDK_INT);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
@@ -204,17 +204,22 @@ public final class MainActivity extends Activity {
             collectionFolder = Uri.parse(savedCollectionFolder);
         }
         RetainedUi retained = getLastNonConfigurationInstance() instanceof RetainedUi value ? value : null;
-        if (retained != null) {
+        if (retained == null) {
+            deleteSharedPreferences("scraper_history");
+            deleteSharedPreferences("subtitle_history");
+        } else {
             needsReview.addAll(retained.needsReview());
             movies = retained.movies();
             apiVerified = retained.apiVerified();
             retainedMoviePush = retained.moviePush();
         }
         configureWindow();
-        buildScreen();
+        buildScreen(retained);
         if (retained != null) {
-            scraperLog.state().setText(retained.scraperStatus());
-            subtitleLog.state().setText(retained.subtitleStatus());
+            showRunState(scraperLog, retained.scraperStatus(), ScrapeHistory.Tone.NEUTRAL);
+            showRunState(subtitleLog, retained.subtitleStatus(), ScrapeHistory.Tone.NEUTRAL);
+            updateLog(scraperLog);
+            updateLog(subtitleLog);
             diagnosticReport.setText(retained.report());
             diagnosticReport.setVisibility(retained.reportVisible() ? View.VISIBLE : View.GONE);
             scroll.post(() -> scroll.scrollTo(0, retained.scraperScroll()));
@@ -226,8 +231,6 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        updateLog(scraperLog, scraperLog.history().currentTask());
-        updateLog(subtitleLog, subtitleLog.history().currentTask());
         refreshPosters();
     }
 
@@ -241,12 +244,14 @@ public final class MainActivity extends Activity {
         String scraperStatus = busy && activeRunPanel == scraperLog ? "任务已中断" : scraperLog.state().getText().toString();
         String subtitleStatus = busy && activeRunPanel == subtitleLog ? "任务已中断" : subtitleLog.state().getText().toString();
         return new RetainedUi(new HashSet<>(needsReview), new ArrayList<>(movies),
-                apiVerified, scraperStatus, subtitleStatus, diagnosticReport.getText().toString(),
+                apiVerified, scraperLog.history(), subtitleLog.history(), scraperStatus, subtitleStatus,
+                diagnosticReport.getText().toString(),
                 diagnosticReport.getVisibility() == View.VISIBLE, scroll.getScrollY(), pushState);
     }
 
     private record RetainedUi(Set<String> needsReview, List<MovieStorage.Movie> movies,
-                              boolean apiVerified, String scraperStatus, String subtitleStatus, String report, boolean reportVisible,
+                              boolean apiVerified, ScrapeHistory scraperHistory, ScrapeHistory subtitleHistory,
+                              String scraperStatus, String subtitleStatus, String report, boolean reportVisible,
                               int scraperScroll, MoviePushScreen.State moviePush) {}
 
     private void configureWindow() {
@@ -260,7 +265,7 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void buildScreen() {
+    private void buildScreen(RetainedUi retained) {
         frame = new FrameLayout(this);
         frame.setBackgroundColor(appearance.background);
         frame.setFocusableInTouchMode(true);
@@ -299,7 +304,7 @@ public final class MainActivity extends Activity {
             return insets;
         });
         scraperColumn = scrollColumn(scroll);
-        scraperLog = addLog(scraperColumn, "刮削记录", new ScrapeHistory(this));
+        scraperLog = addLog(scraperColumn, "刮削记录", retained == null ? new ScrapeHistory() : retained.scraperHistory());
         addScraperActions();
         subtitlePage = vertical();
         subtitlePage.addView(createToolbar(Page.SUBTITLES.label, null));
@@ -307,7 +312,7 @@ public final class MainActivity extends Activity {
         subtitleScroll.setFillViewport(true);
         subtitlePage.addView(subtitleScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         subtitleColumn = scrollColumn(subtitleScroll);
-        subtitleLog = addLog(subtitleColumn, "字幕下载记录", new ScrapeHistory(this, "subtitle_history"));
+        subtitleLog = addLog(subtitleColumn, "字幕下载记录", retained == null ? new ScrapeHistory() : retained.subtitleHistory());
         LinearLayout subtitleActions = horizontal();
         subtitlesOnly = primaryAction("一键下载字幕", this::runSubtitleBatch);
         subtitleActions.addView(subtitlesOnly, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -363,7 +368,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.18.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.19.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -736,7 +741,8 @@ public final class MainActivity extends Activity {
         LinearLayout toolbar = horizontal();
         toolbar.setPaddingRelative(dp(16), dp(8), dp(16), dp(10));
         toolbar.addView(leading, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        TextView title = text(label, 24, appearance.foreground, true);
+        int titleSize = label.equals(Page.SCRAPER.label) || label.equals(Page.SUBTITLES.label) ? 23 : 24;
+        TextView title = text(label, titleSize, appearance.foreground, true);
         if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
         LinearLayout.LayoutParams titleSpace = new LinearLayout.LayoutParams(0, -2, 1f);
         titleSpace.setMarginStart(dp(12));
@@ -1299,7 +1305,6 @@ public final class MainActivity extends Activity {
             settings.edit().putString("collection_folder", selected.toString()).apply();
             releaseUnusedDirectory(previous);
             updateCollectionFolderLabel();
-            note("合集图片目录 · " + directoryName(selected));
             return;
         }
         Uri previous = folder;
@@ -1310,7 +1315,6 @@ public final class MainActivity extends Activity {
         releaseUnusedDirectory(previous);
         updateFolderLabel();
         updateUi();
-        note("已选择 " + directoryName(folder));
         DebugLog.event("storage", "movie tree changed");
         refreshPosters();
     }
@@ -1443,15 +1447,15 @@ public final class MainActivity extends Activity {
         boolean skipSubtitles = skipExistingSubtitles.isChecked();
         persistOptions();
         needsReview.clear();
-        beginLibraryTask(client, "正在扫描目录… · " + client.provider().label, () -> {
+        beginLibraryTask(client, "正在扫描目录…", () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selectedFolder);
             List<MovieStorage.Movie> scanned = storage.scan(byFolder);
             post(() -> {
                 movies = scanned;
-                note("发现 " + scanned.size() + " 部影片。");
+                note("发现 " + scanned.size() + " 部影片");
             });
             if (scanned.isEmpty()) {
-                return () -> finishWithLog("没有发现可刮削的电影文件");
+                return () -> finishWithLog("待刮削 0 部");
             }
             MovieStorage collections = selectedCollection == null ? null
                     : new MovieStorage(getApplicationContext(), selectedCollection);
@@ -1468,13 +1472,14 @@ public final class MainActivity extends Activity {
             }
             DebugLog.event("preflight", "scanned=" + scanned.size() + " complete=" + complete.size()
                     + " pending=" + pending.size());
+            post(() -> note("待刮削 " + pending.size() + " 部"));
             SubtitleBatch subtitleBatch = new SubtitleBatch();
             Set<MovieStorage.Movie> subtitlePending = subtitles == null ? Collections.emptySet()
                     : new HashSet<>(pendingSubtitles(storage, scanned, skipSubtitles, subtitleBatch, true));
             post(() -> {
-                note("本地检查完成 · 资料齐全 " + complete.size() + " 部 · 待刮削 " + pending.size() + " 部");
+                if (subtitles != null) note("待下载字幕 " + subtitlePending.size() + " 部");
                 if (!stopped && !pending.isEmpty()) {
-                    setRunState("正在连接 " + client.provider().label + "…", ScrapeHistory.Tone.NEUTRAL);
+                    setRunState("正在连接资料服务…", ScrapeHistory.Tone.NEUTRAL);
                     currentRunPanel().progress().setIndeterminate(true);
                 }
             });
@@ -1486,7 +1491,6 @@ public final class MainActivity extends Activity {
                 });
             }
             Batch batch = new Batch();
-            batch.skipped = complete.size();
             scrapePending(pending, storage, engine, client,
                     movie -> subtitlePending.contains(movie) ? subtitles.get() : null, batch, subtitleBatch);
             if (subtitles != null) {
@@ -1494,10 +1498,15 @@ public final class MainActivity extends Activity {
                 subtitleOnly.removeIf(movie -> !subtitlePending.contains(movie));
                 downloadPendingSubtitles(storage, subtitleOnly, subtitles.get(), subtitleBatch, true);
             }
-            String summary = batch.summary(pending.size(), pending.size())
-                    + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
-            return () -> finishWithLog(summary,
-                    outcomeTone(batch.written + subtitleBatch.written, batch.failed + subtitleBatch.failed));
+            return () -> {
+                setRunState("", ScrapeHistory.Tone.NEUTRAL);
+                noteCount("已刮削", batch.written, "部", ScrapeHistory.Tone.SUCCESS);
+                noteCount("资料待补", batch.incomplete, "部", ScrapeHistory.Tone.NEUTRAL);
+                noteCount("已保留原资料", batch.preserved, "部", ScrapeHistory.Tone.NEUTRAL);
+                noteCount("待确认", batch.review, "部", ScrapeHistory.Tone.NEUTRAL);
+                noteCount("刮削失败", batch.failed, "部", ScrapeHistory.Tone.FAILURE);
+                if (subtitles != null) reportSubtitleResults(subtitleBatch);
+            };
         });
     }
 
@@ -1520,7 +1529,9 @@ public final class MainActivity extends Activity {
         if (pending.isEmpty()) return;
         int width = Math.min(pending.size(), client.provider() == MovieMetadataSource.Provider.TMDB
                 ? TMDB_BATCH_CONCURRENCY : 1);
-        post(() -> note("开始刮削 " + pending.size() + " 部"));
+        post(() -> {
+            if (!stopped) setRunState("正在刮削…", ScrapeHistory.Tone.NEUTRAL);
+        });
         DebugLog.event("metadata", "queued=" + pending.size() + " workers=" + width);
         ExecutorService workers = Executors.newFixedThreadPool(width, job -> new Thread(job, "MovieBatch"));
         ExecutorCompletionService<FilmRun> queue = new ExecutorCompletionService<>(workers);
@@ -1547,8 +1558,6 @@ public final class MainActivity extends Activity {
             Thread.currentThread().interrupt();
             throw new InterruptedIOException("操作已停止");
         } catch (ExecutionException failure) {
-            int count = completed;
-            post(() -> note(batch.summary(count, pending.size())));
             Throwable cause = failure.getCause();
             if (cause instanceof IOException io) throw io;
             if (cause instanceof RuntimeException runtime) throw runtime;
@@ -1633,17 +1642,18 @@ public final class MainActivity extends Activity {
         boolean byFolder = preferFolder.isChecked();
         boolean skipSubtitles = skipExistingSubtitles.isChecked();
         SubtitleScraper subtitles = subtitleScraper();
-        begin(null, "正在扫描字幕下载目录…", () -> {
+        begin(null, "正在扫描目录…", () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             List<MovieStorage.Movie> scanned = storage.scan(byFolder);
-            if (scanned.isEmpty()) {
-                return () -> finishWithLog("没有发现可匹配字幕的电影文件");
-            }
+            post(() -> note("发现 " + scanned.size() + " 部影片"));
             SubtitleBatch batch = new SubtitleBatch();
             List<MovieStorage.Movie> pending = pendingSubtitles(storage, scanned, skipSubtitles, batch, true);
+            post(() -> note("待下载字幕 " + pending.size() + " 部"));
             downloadPendingSubtitles(storage, pending, subtitles, batch, false);
-            String summary = batch.summary();
-            return () -> finishWithLog(summary, outcomeTone(batch.written, batch.failed));
+            return () -> {
+                setRunState("", ScrapeHistory.Tone.NEUTRAL);
+                reportSubtitleResults(batch);
+            };
         });
     }
 
@@ -1674,8 +1684,6 @@ public final class MainActivity extends Activity {
         int failed = batch.failed;
         DebugLog.event("subtitle-preflight", "scanned=" + scanned.size() + " skipped=" + skipped
                 + " pending=" + pending.size() + " failed=" + failed);
-        if (showProgress) post(() -> note("字幕检查完成 · 已有 " + skipped + " 部 · 待下载 " + pending.size()
-                + " 部" + (failed > 0 ? " · 无法检查 " + failed + " 部" : "")));
         return pending;
     }
 
@@ -1707,7 +1715,6 @@ public final class MainActivity extends Activity {
                     + " saved=" + result.written + " duplicate=" + result.duplicates
                     + " provider_failures=" + result.providerFailures.size() + " write_error=" + (result.writeFailure != null));
             batch.written += result.written;
-            batch.duplicates += result.duplicates;
             String prefix = "字幕 · " + (result.source.isEmpty() ? "" : result.source + " · ");
             if (result.writeFailure != null) {
                 ScrapeEngine.checkCancelled();
@@ -1930,14 +1937,13 @@ public final class MainActivity extends Activity {
         SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
         boolean skipSubtitles = skipExistingSubtitles.isChecked();
         persistOptions();
-        beginLibraryTask(client, "正在手动刮削 · " + client.provider().label, movie, () -> {
+        beginLibraryTask(client, "正在手动刮削…", movie, () -> {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             MovieStorage collections = selectedCollection == null ? null
                     : new MovieStorage(getApplicationContext(), selectedCollection);
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, true, downloadActors, downloadAlternate);
             SubtitleBatch batch = new SubtitleBatch();
-            ScrapeEngine.Result result;
             int tmdbId = client.provider() == MovieMetadataSource.Provider.TMDB ? id : 0;
             boolean needsSubtitles = subtitles != null
                     && !pendingSubtitles(storage, Collections.singletonList(movie), skipSubtitles, batch, false).isEmpty();
@@ -1945,7 +1951,7 @@ public final class MainActivity extends Activity {
             try (SubtitleWork work = startSubtitles(needsSubtitles ? subtitles : null, storage, movie, tmdbId)) {
                 ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> reportMetadataDetail(movie, message),
                         work == null ? query -> {} : work::matched);
-                result = scraped.result;
+                ScrapeEngine.Result result = scraped.result;
                 String status = "资料 · " + resultLabel(result);
                 post(() -> noteMovie(movie, status, metadataTone(result)));
                 if (work != null) {
@@ -1956,7 +1962,7 @@ public final class MainActivity extends Activity {
             return () -> {
                 needsReview.remove(movie.relativePath);
                 if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
-                setRunState(resultLabel(result), metadataTone(result));
+                setRunState("", ScrapeHistory.Tone.NEUTRAL);
                 updateUi();
             };
         });
@@ -2082,7 +2088,8 @@ public final class MainActivity extends Activity {
         dismissKeyboard();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setRunState(status, ScrapeHistory.Tone.NEUTRAL);
-        updateLog(taskPanel, taskPanel.history().append(redactLogText(status), true, ScrapeHistory.Tone.NEUTRAL));
+        taskPanel.history().clear();
+        updateLog(taskPanel);
         currentRunPanel().progress().setVisibility(View.VISIBLE);
         currentRunPanel().progress().setIndeterminate(true);
         updateUi();
@@ -2123,8 +2130,6 @@ public final class MainActivity extends Activity {
                         if (diagnostic) {
                             diagnosticReport.setText("连接检测已停止");
                             note("连接检测已停止");
-                        } else {
-                            note("任务已停止。已写入的资料可以继续使用。");
                         }
                     } else if (failure != null) {
                         setRunState("操作失败", ScrapeHistory.Tone.FAILURE);
@@ -2256,7 +2261,18 @@ public final class MainActivity extends Activity {
 
     private void note(String message, ScrapeHistory.Tone tone) {
         RunPanel panel = currentRunPanel();
-        updateLog(panel, panel.history().append(redactLogText(message), false, tone));
+        panel.history().append(redactLogText(message), tone);
+        updateLog(panel);
+    }
+
+    private void noteCount(String label, int count, String unit, ScrapeHistory.Tone tone) {
+        if (count > 0) note(label + " " + count + " " + unit, tone);
+    }
+
+    private void reportSubtitleResults(SubtitleBatch batch) {
+        noteCount("已保存字幕", batch.written, "个", ScrapeHistory.Tone.SUCCESS);
+        noteCount("未找到字幕", batch.missing, "部", ScrapeHistory.Tone.NEUTRAL);
+        noteCount("字幕失败", batch.failed, "部", ScrapeHistory.Tone.FAILURE);
     }
 
     private void noteMovie(MovieStorage.Movie movie, String message, ScrapeHistory.Tone tone) {
@@ -2266,8 +2282,8 @@ public final class MainActivity extends Activity {
 
     private void noteMovie(String moviePath, String movieTitle, String message, ScrapeHistory.Tone tone) {
         RunPanel panel = currentRunPanel();
-        updateLog(panel, panel.history().appendMovie(redactLogText(moviePath), redactLogText(movieTitle),
-                redactLogText(message), tone));
+        panel.history().appendMovie(redactLogText(moviePath), redactLogText(movieTitle), redactLogText(message), tone);
+        updateLog(panel);
     }
 
     private void reportMetadataDetail(MovieStorage.Movie movie, String message) {
@@ -2297,28 +2313,25 @@ public final class MainActivity extends Activity {
     }
 
     private void finishWithLog(String summary, ScrapeHistory.Tone tone) {
-        setRunState(summary, tone);
+        setRunState("", ScrapeHistory.Tone.NEUTRAL);
         note(summary, tone);
     }
 
     private void setRunState(String message, ScrapeHistory.Tone tone) {
-        RunPanel panel = currentRunPanel();
-        panel.state().setTextColor(ScrapeLogText.color(tone, appearance.dark, appearance.muted));
-        panel.state().setText(redactLogText(message));
+        showRunState(currentRunPanel(), redactLogText(message), tone);
     }
 
-    private void updateLog(RunPanel panel, List<ScrapeHistory.Entry> entries) {
+    private void showRunState(RunPanel panel, String message, ScrapeHistory.Tone tone) {
+        panel.state().setTextColor(ScrapeLogText.color(tone, appearance.dark, appearance.muted));
+        panel.state().setText(message);
+        panel.state().setVisibility(message.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+
+    private void updateLog(RunPanel panel) {
         ScrollView viewport = panel == subtitleLog ? subtitleScroll : scroll;
         boolean follow = panel == activeRunPanel && panel.entries().getVisibility() == View.VISIBLE
                 && viewport.isShown() && !viewport.canScrollVertically(1);
-        if (!entries.isEmpty()) {
-            ScrapeHistory.Entry latest = entries.get(0);
-            if (!latest.isMovie() && latest.message().contentEquals(panel.state().getText())) {
-                panel.state().setTextColor(ScrapeLogText.color(latest.tone(), appearance.dark, appearance.muted));
-                entries = entries.subList(1, entries.size());
-            }
-        }
-        CharSequence rendered = ScrapeLogText.render(entries, dp(14), appearance.dark);
+        CharSequence rendered = ScrapeLogText.render(panel.history().currentTask(), dp(14), appearance.dark);
         panel.entries().setText(rendered);
         panel.entries().setVisibility(rendered.length() == 0 ? View.GONE : View.VISIBLE);
         if (follow && rendered.length() > 0) {
@@ -2334,7 +2347,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.18.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.19.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -2406,7 +2419,6 @@ public final class MainActivity extends Activity {
         int written;
         int incomplete;
         int preserved;
-        int skipped;
         int review;
         int failed;
 
@@ -2426,32 +2438,18 @@ public final class MainActivity extends Activity {
                 case REVIEW: review++; break;
             }
         }
-
-        String summary(int completed, int total) {
-            String count = total == 0 ? "没有待刮削影片" : "处理 " + completed + "/" + total + " 部";
-            return count + " · 写入 " + written + " · 待补 "
-                    + incomplete + " · 保留 " + preserved + " · 跳过 " + skipped + " · 待确认 " + review + " · 失败 " + failed;
-        }
     }
 
     private static final class SubtitleBatch {
         int written;
-        int duplicates;
         int skipped;
         int missing;
         int failed;
 
         void add(SubtitleBatch run) {
             written += run.written;
-            duplicates += run.duplicates;
-            skipped += run.skipped;
             missing += run.missing;
             failed += run.failed;
-        }
-
-        String summary() {
-            return "字幕 · 保存 " + written + " 个 · 已跳过 " + skipped + " 部 · 重复 " + duplicates + " 个 · 未匹配 " + missing
-                    + " 部 · 失败 " + failed + " 部";
         }
     }
 
