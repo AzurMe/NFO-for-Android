@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.view.Gravity;
 import android.view.View;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -102,7 +103,18 @@ final class TrailerPlayer {
 
     private static AlertDialog showYouTube(MainActivity activity, String videoId) {
         FrameLayout panel = panel(activity);
-        WebView video = new WebView(activity);
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("预告片")
+                .setView(panel).setNegativeButton("关闭", null)
+                .setNeutralButton("在 YouTube 打开", (box, button) -> openYouTube(activity, videoId)).create();
+        dialog.show();
+        WebView video;
+        try {
+            video = new WebView(activity);
+        } catch (RuntimeException unavailable) {
+            DebugLog.failure("youtube-player", unavailable);
+            showYouTubeError(activity, panel);
+            return dialog;
+        }
         video.setBackgroundColor(0xff000000);
         video.setContentDescription("YouTube 预告片");
         WebSettings settings = video.getSettings();
@@ -115,17 +127,22 @@ final class TrailerPlayer {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return request.isForMainFrame() || !"https".equals(request.getUrl().getScheme());
             }
+
+            @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                DebugLog.event("youtube-player", "renderer_exited crashed=" + detail.didCrash());
+                panel.removeView(view);
+                view.destroy();
+                if (dialog.isShowing()) showYouTubeError(activity, panel);
+                return true;
+            }
         });
         panel.addView(video, new FrameLayout.LayoutParams(-1, -1));
-        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle("预告片")
-                .setView(panel).setNegativeButton("关闭", null)
-                .setNeutralButton("在 YouTube 打开", (box, button) -> openYouTube(activity, videoId)).create();
         dialog.setOnDismissListener(ignored -> {
+            if (video.getParent() != panel) return;
             video.stopLoading();
             panel.removeView(video);
             video.destroy();
         });
-        dialog.show();
         // The YouTube WebView integration expects the app identity as the HTTP referrer.
         String origin = "https://" + activity.getPackageName();
         String html = """
@@ -151,6 +168,13 @@ final class TrailerPlayer {
         video.loadDataWithBaseURL(origin + "/", String.format(Locale.ROOT, html, videoId, origin),
                 "text/html", "UTF-8", null);
         return dialog;
+    }
+
+    private static void showYouTubeError(MainActivity activity, FrameLayout panel) {
+        TextView message = activity.text("当前无法嵌入播放，可选择在 YouTube 打开。", 14, 0xffffffff, false);
+        message.setGravity(Gravity.CENTER);
+        message.setPadding(activity.dp(14), 0, activity.dp(14), 0);
+        panel.addView(message, new FrameLayout.LayoutParams(-1, -1));
     }
 
     private static FrameLayout panel(MainActivity activity) {
