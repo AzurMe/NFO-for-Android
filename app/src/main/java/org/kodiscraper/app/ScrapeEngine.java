@@ -12,7 +12,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -25,6 +27,8 @@ final class ScrapeEngine {
     static final int ACTOR_LIMIT = 20;
     static final int ALTERNATE_FANART_LIMIT = 3;
     private static final int NFO_READ_LIMIT = 1024 * 1024;
+    private static final int ARTWORK_REPAIR_READ_LIMIT = 16 * 1024 * 1024;
+    private static final byte[] EMPTY_MOVIE_NFO = "<movie/>".getBytes(StandardCharsets.UTF_8);
     private static final String[] TYPES = {"poster", "fanart", "clearlogo", "landscape", "keyart"};
     private static final String[] SIZES = {"w780", "w1280", "original", "w1280", "w780"};
     private static final String[] EXTENSIONS = {"jpg", "png", "jpeg", "webp"};
@@ -69,7 +73,7 @@ final class ScrapeEngine {
     boolean isCompleteLocally(MovieStorage.Movie movie) throws IOException {
         try {
             List<NfoSidecar> sidecars = readSidecars(storage, movie);
-            return !sidecars.isEmpty() && sidecars.get(0).ids.fullMovie
+            return completeNfo(sidecars)
                     && readableArtwork(movie, "poster") && readableArtwork(movie, "fanart");
         } catch (IOException unreadable) {
             checkCancelled();
@@ -79,7 +83,27 @@ final class ScrapeEngine {
 
     private boolean readableArtwork(MovieStorage.Movie movie, String type) throws IOException {
         String name = findArtwork(movie, type, movie.singleMovieInDirectory);
-        return name != null && storage.hasImageDimensions(storage.find(movie.directory, name));
+        MovieStorage.Entry entry = name == null ? null : storage.find(movie.directory, name);
+        return entry != null && storage.hasImageDimensions(entry);
+    }
+
+    private static boolean completeNfo(List<NfoSidecar> sidecars) {
+        return !sidecars.isEmpty() && sidecars.stream().allMatch(sidecar -> sidecar.ids.fullMovie);
+    }
+
+    private boolean isCorruptArtwork(MovieStorage.Movie movie, String name) throws IOException {
+        MovieStorage.Entry entry = storage.find(movie.directory, name);
+        if (entry == null) throw new IOException("图片文件已移动");
+        if (storage.hasImageDimensions(entry)) return false;
+        // A failing bounds probe can also mean a document provider lost access. Only replace the
+        // file in automatic mode if its actual bytes can still be read and verified as invalid.
+        byte[] contents = storage.read(entry, ARTWORK_REPAIR_READ_LIMIT);
+        BitmapFactory.Options bounds = imageBounds(contents);
+        return bounds.outWidth <= 0 || bounds.outHeight <= 0;
+    }
+
+    private static boolean isPrimaryArtwork(String type) {
+        return "poster".equals(type) || "fanart".equals(type);
     }
 
     Outcome scrape(MovieStorage.Movie movie, int selectedId, Progress progress) throws IOException {
@@ -91,6 +115,9 @@ final class ScrapeEngine {
         checkCancelled();
         List<NfoSidecar> sidecars = readSidecars(storage, movie);
         boolean preserve = !sidecars.isEmpty() && !overwrite;
+        boolean nfoComplete = completeNfo(sidecars);
+        boolean repairNfo = preserve && !nfoComplete
+                && sidecars.stream().allMatch(sidecar -> sidecar.ids.validMovie);
         Identifiers existingIds = preferredIds(sidecars);
         boolean tvdb = source.provider() == MovieMetadataSource.Provider.TVDB;
         int tvdbLocal = tvdb && (selectedId <= 0 || preserve) ? localProviderId(existingIds) : 0;
@@ -101,23 +128,31 @@ final class ScrapeEngine {
         if (sourceId <= 0) {
             if (tvdb) {
                 sourceId = tvdbLocal;
-                if (sourceId <= 0 && movie.imdbId != null) sourceId = source.findMovieByImdb(movie.imdbId);
+                if (sourceId <= 0 && movie.imdbId != null && !movie.imdbId.isEmpty()) {
+                    sourceId = source.findMovieByImdb(movie.imdbId);
+                }
                 if (sourceId <= 0 && movie.tmdbId > 0) sourceId = source.findMovieByTmdb(movie.tmdbId);
             } else {
                 sourceId = movie.tmdbId > 0 ? movie.tmdbId : existingIds.tmdbId;
                 String imdbId = movie.imdbId == null || movie.imdbId.isEmpty() ? existingIds.imdbId : movie.imdbId;
                 if (sourceId <= 0 && imdbId != null && !imdbId.isEmpty()) {
                     sourceId = source.findMovieByImdb(imdbId);
-                    if (sourceId <= 0) return new Outcome(preserve ? Result.PRESERVED : Result.REVIEW, subtitleQuery);
+                    if (sourceId <= 0 && !preserve) return new Outcome(Result.REVIEW, subtitleQuery);
                 }
             }
         }
         if (preserve) {
-            // Existing metadata without an identity cannot safely be used to backfill its artwork.
             int trustedId = tvdb ? tvdbLocal : localProviderId(existingIds);
+            if (trustedId <= 0 && !existingIds.hasIdentity() && hasFilenameId(movie)) {
+                trustedId = sourceId;
+            }
             if (trustedId <= 0 || (sourceId > 0 && sourceId != trustedId)
                     || hasConflictingIds(sidecars, existingIds, tvdb ? existingIds.tmdbId : trustedId)) {
-                return new Outcome(Result.PRESERVED, subtitleQuery);
+                if (nfoComplete && readableArtwork(movie, "poster") && readableArtwork(movie, "fanart")) {
+                    return new Outcome(Result.PRESERVED, subtitleQuery);
+                }
+                progress.update("无法确认已有资料的影片身份，保留原文件，请手动匹配。");
+                return new Outcome(Result.REVIEW, subtitleQuery);
             }
             sourceId = trustedId;
         }
@@ -132,12 +167,9 @@ final class ScrapeEngine {
         }
 
         JSONObject details = source.details(sourceId);
-        if (tvdb && selectedId <= 0) {
-            int tmdbId = details.optInt("id");
-            String imdbId = TvdbMovie.text(details.optJSONObject("external_ids"), "imdb_id");
-            if ((movie.tmdbId > 0 && tmdbId > 0 && movie.tmdbId != tmdbId)
-                    || (preserve && existingIds.tmdbId > 0 && tmdbId > 0 && existingIds.tmdbId != tmdbId)
-                    || imdbConflict(movie.imdbId, imdbId) || (preserve && imdbConflict(existingIds.imdbId, imdbId))) {
+        if (selectedId <= 0 && (tvdb || preserve)) {
+            if (conflictsWithDetails(movie, existingIds, details, preserve)) {
+                progress.update("刮削来源与已有影片编号不一致，保留原文件，请手动匹配。");
                 return new Outcome(Result.REVIEW, subtitleQuery);
             }
         }
@@ -146,15 +178,27 @@ final class ScrapeEngine {
         String supplementWarning = details.optString("supplement_warning");
         if (!supplementWarning.isEmpty()) progress.update(supplementWarning);
         Map<String, String> artwork = new HashMap<>();
+        Map<String, String> damagedArtwork = new HashMap<>();
+        Set<String> unreadableArtwork = new HashSet<>();
         List<String> warnings = new ArrayList<>();
         for (String type : TYPES) {
             String existing = findArtwork(movie, type);
             if (existing != null) {
-                artwork.put(type, existing);
+                try {
+                    if (!overwrite && isPrimaryArtwork(type) && isCorruptArtwork(movie, existing)) {
+                        damagedArtwork.put(type, existing);
+                    } else {
+                        artwork.put(type, existing);
+                    }
+                } catch (IOException unreadable) {
+                    checkCancelled();
+                    unreadableArtwork.add(type);
+                    warnings.add(artworkLabel(type) + "（原文件无法读取，已保留）");
+                }
             }
         }
         byte[] updatedNfo = null;
-        if (!preserve) {
+        if (!preserve || repairNfo) {
             progress.update("正在合并 Kodi 本地资料");
             byte[][] previous = new byte[sidecars.size()][];
             for (int i = 0; i < sidecars.size(); i++) {
@@ -170,16 +214,26 @@ final class ScrapeEngine {
         for (int i = 0; i < TYPES.length; i++) {
             checkCancelled();
             String type = TYPES[i];
+            if (unreadableArtwork.contains(type)) continue;
             String path = source.artwork(details, type);
             try {
                 String target = artwork.get(type);
-                if (tvdb && target == null && (path == null || path.isEmpty()) && (i == 0 || i == 1)) {
+                if (target == null && (path == null || path.isEmpty()) && isPrimaryArtwork(type)) {
                     unavailable.add(artworkLabel(type));
                 }
                 if ((target == null || overwrite) && path != null && !path.isEmpty()) {
-                    target = target == null ? movie.artworkName(type, "clearlogo".equals(type) ? "png" : "jpg") : target;
-                    if (writeImage(storage, movie.directory, target, path, SIZES[i])) {
+                    String damaged = damagedArtwork.get(type);
+                    if (target == null) {
+                        target = damaged == null
+                                ? movie.artworkName(type, "clearlogo".equals(type) ? "png" : "jpg") : damaged;
+                    }
+                    boolean written = damaged == null
+                            ? writeImage(storage, movie.directory, target, path, SIZES[i])
+                            : repairImage(movie, target, path, SIZES[i]);
+                    if (written) {
                         artWritten++;
+                    } else if (isPrimaryArtwork(type) && !readableArtwork(movie, type)) {
+                        warnings.add(artworkLabel(type));
                     }
                 }
             } catch (IOException problem) {
@@ -207,11 +261,26 @@ final class ScrapeEngine {
             }
         }
         checkCancelled();
+        boolean nfoWritten = false;
+        boolean nfoIncomplete = preserve && !nfoComplete && !repairNfo;
         if (updatedNfo != null) {
-            storage.write(movie.directory, movie.nfoName, "application/xml", updatedNfo, overwrite);
-            for (NfoSidecar sidecar : sidecars) {
-                if (!sidecar.name.equalsIgnoreCase(movie.nfoName)) {
-                    storage.write(movie.directory, sidecar.name, "application/xml", updatedNfo, true);
+            if (repairNfo) {
+                for (NfoSidecar sidecar : sidecars) {
+                    if (!sidecar.ids.fullMovie) {
+                        boolean repaired = repairNfo(movie, sidecar, updatedNfo, progress);
+                        nfoWritten |= repaired;
+                        nfoIncomplete |= !repaired;
+                    }
+                }
+            } else {
+                nfoWritten = storage.write(movie.directory, movie.nfoName, "application/xml", updatedNfo, overwrite);
+                for (NfoSidecar sidecar : sidecars) {
+                    if (!sidecar.name.equalsIgnoreCase(movie.nfoName)) {
+                        nfoWritten |= storage.write(movie.directory, sidecar.name, "application/xml", updatedNfo, true);
+                    }
+                }
+                if (!nfoWritten) {
+                    throw new IOException("NFO 输出位置已占用，未更新影片资料。");
                 }
             }
         }
@@ -219,12 +288,33 @@ final class ScrapeEngine {
             progress.update("以下图片写入失败：" + String.join("、", warnings));
         }
         if (!unavailable.isEmpty()) {
-            progress.update("TheTVDB 暂无以下图片：" + String.join("、", unavailable));
+            progress.update(source.provider().label + " 暂无以下图片：" + String.join("、", unavailable));
         }
-        if (!warnings.isEmpty() || !unavailable.isEmpty()) {
+        if (preserve && !nfoComplete && !repairNfo) {
+            progress.update("已有 NFO 无法安全合并，已保留原文件。");
+        }
+        if (!warnings.isEmpty() || !unavailable.isEmpty() || nfoIncomplete) {
             return new Outcome(Result.INCOMPLETE, subtitleQuery);
         }
-        return new Outcome(!preserve || artWritten > 0 ? Result.WRITTEN : Result.PRESERVED, subtitleQuery);
+        return new Outcome(nfoWritten || artWritten > 0 ? Result.WRITTEN : Result.PRESERVED, subtitleQuery);
+    }
+
+    private boolean repairNfo(MovieStorage.Movie movie, NfoSidecar sidecar, byte[] updated, Progress progress)
+            throws IOException {
+        MovieStorage.Entry current = storage.find(movie.directory, sidecar.name);
+        byte[] currentBytes;
+        try {
+            currentBytes = current == null ? null : storage.read(current, NFO_READ_LIMIT);
+        } catch (IOException unreadable) {
+            checkCancelled();
+            progress.update("已有 NFO 无法重新读取，已保留。");
+            return false;
+        }
+        if (!Arrays.equals(sidecar.contents, currentBytes)) {
+            progress.update("已有 NFO 在刮削期间发生变化，已保留。");
+            return false;
+        }
+        return storage.write(movie.directory, sidecar.name, "application/xml", updated, true);
     }
 
     private int localProviderId(Identifiers ids) throws IOException {
@@ -232,6 +322,24 @@ final class ScrapeEngine {
         if (source.provider() == MovieMetadataSource.Provider.TVDB && ids.tvdbId > 0) return ids.tvdbId;
         int matched = ids.imdbId == null ? 0 : source.findMovieByImdb(ids.imdbId);
         return matched > 0 || ids.tmdbId <= 0 ? matched : source.findMovieByTmdb(ids.tmdbId);
+    }
+
+    private static boolean hasFilenameId(MovieStorage.Movie movie) {
+        return movie.tmdbId > 0 || (movie.imdbId != null && !movie.imdbId.isEmpty());
+    }
+
+    private static boolean conflictsWithDetails(MovieStorage.Movie movie, Identifiers existingIds,
+                                                JSONObject details, boolean preserve) {
+        JSONObject external = details.optJSONObject("external_ids");
+        int tmdbId = details.optInt("id");
+        int tvdbId = external == null ? 0 : external.optInt("tvdb_id");
+        String imdbId = TvdbMovie.text(external, "imdb_id");
+        if (imdbId.isEmpty()) imdbId = TvdbMovie.text(details, "imdb_id");
+        return (movie.tmdbId > 0 && tmdbId > 0 && movie.tmdbId != tmdbId)
+                || imdbConflict(movie.imdbId, imdbId)
+                || (preserve && ((existingIds.tmdbId > 0 && tmdbId > 0 && existingIds.tmdbId != tmdbId)
+                || (existingIds.tvdbId > 0 && tvdbId > 0 && existingIds.tvdbId != tvdbId)
+                || imdbConflict(existingIds.imdbId, imdbId)));
     }
 
     private static boolean imdbConflict(String expected, String received) {
@@ -308,6 +416,12 @@ final class ScrapeEngine {
                                String path, String size) throws IOException {
         byte[] data = formattedImage(source.image(path, size), name);
         return targetStorage.write(directory, name, mime(name), data, overwrite);
+    }
+
+    private boolean repairImage(MovieStorage.Movie movie, String name, String path, String size) throws IOException {
+        byte[] data = formattedImage(source.image(path, size), name);
+        if (!isCorruptArtwork(movie, name)) return false;
+        return storage.write(movie.directory, name, mime(name), data, true);
     }
 
     private int saveActors(MovieStorage.Movie movie, JSONObject details, List<String> warnings) throws IOException {
@@ -404,6 +518,10 @@ final class ScrapeEngine {
     }
 
     private static byte[] formattedImage(byte[] data, String target) throws IOException {
+        BitmapFactory.Options bounds = imageBounds(data);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw new IOException("刮削来源返回无法读取的图片");
+        }
         String type = mime(target);
         if (type.equals("image/jpeg") && data.length > 3
                 && (data[0] & 0xff) == 0xff && (data[1] & 0xff) == 0xd8 && (data[2] & 0xff) == 0xff) {
@@ -417,12 +535,6 @@ final class ScrapeEngine {
                 && data[10] == 'B' && data[11] == 'P') {
             return data;
         }
-        BitmapFactory.Options bounds = new BitmapFactory.Options();
-        bounds.inJustDecodeBounds = true;
-        BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            throw new IOException("TMDB 返回无法读取的图片");
-        }
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inSampleSize = 1;
         while (Math.max(bounds.outWidth, bounds.outHeight) / options.inSampleSize > 3000) {
@@ -430,7 +542,7 @@ final class ScrapeEngine {
         }
         Bitmap image = BitmapFactory.decodeByteArray(data, 0, data.length, options);
         if (image == null) {
-            throw new IOException("TMDB 返回无法读取的图片");
+            throw new IOException("刮削来源返回无法读取的图片");
         }
         Bitmap.CompressFormat format = Bitmap.CompressFormat.JPEG;
         if (type.equals("image/png")) {
@@ -447,6 +559,13 @@ final class ScrapeEngine {
         } finally {
             image.recycle();
         }
+    }
+
+    private static BitmapFactory.Options imageBounds(byte[] data) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+        return bounds;
     }
 
     static SubtitleQuery subtitleQuery(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
@@ -485,7 +604,7 @@ final class ScrapeEngine {
 
     private static Identifiers preferredIds(List<NfoSidecar> sidecars) {
         for (NfoSidecar sidecar : sidecars) {
-            if (sidecar.ids.tmdbId > 0 || sidecar.ids.imdbId != null || sidecar.ids.tvdbId > 0) {
+            if (sidecar.ids.hasIdentity()) {
                 return sidecar.ids;
             }
         }
@@ -506,16 +625,22 @@ final class ScrapeEngine {
 
     private static Identifiers readIds(byte[] bytes) throws IOException {
         Identifiers ids = new Identifiers();
+        boolean movieRoot = false;
+        boolean titled = false;
+        boolean closed = false;
         try {
             XmlPullParser parser = Xml.newPullParser();
             parser.setFeature(XmlPullParser.FEATURE_PROCESS_DOCDECL, false);
             parser.setInput(new ByteArrayInputStream(bytes), null);
-            boolean titled = false;
-            boolean closed = false;
-            for (int event = parser.getEventType(); event != XmlPullParser.END_DOCUMENT; event = parser.next()) {
-                if (event == XmlPullParser.START_TAG && parser.getDepth() == 1
-                        && !"movie".equalsIgnoreCase(parser.getName())) {
-                    return ids;
+            for (int event = parser.getEventType(); event != XmlPullParser.END_DOCUMENT; event = parser.nextToken()) {
+                if (event == XmlPullParser.DOCDECL) return new Identifiers();
+                if (event == XmlPullParser.TEXT && parser.getDepth() == 0 && !parser.isWhitespace()) {
+                    if (!closed || !safeMovieNfo(bytes)) return new Identifiers();
+                    break;
+                }
+                if (event == XmlPullParser.START_TAG && parser.getDepth() == 1) {
+                    if (movieRoot || !"movie".equals(parser.getName())) return new Identifiers();
+                    movieRoot = true;
                 }
                 if (event == XmlPullParser.END_TAG && parser.getDepth() == 1) {
                     closed = true;
@@ -548,12 +673,23 @@ final class ScrapeEngine {
                     }
                 }
             }
-            ids.fullMovie = titled && closed;
         } catch (Exception ignored) {
             checkCancelled();
-            // Old NFO files may be plain scraper URLs or use malformed XML.
+            // Kodi combination NFOs may append a provider URL after a complete movie element.
+            if (!closed || !safeMovieNfo(bytes)) return new Identifiers();
         }
+        ids.validMovie = movieRoot && closed;
+        ids.fullMovie = ids.validMovie && titled;
         return ids;
+    }
+
+    private static boolean safeMovieNfo(byte[] bytes) {
+        try {
+            KodiNfo.preserveUserFields(EMPTY_MOVIE_NFO, bytes);
+            return true;
+        } catch (IOException malformed) {
+            return false;
+        }
     }
 
     static int parseId(String value) {
@@ -600,7 +736,12 @@ final class ScrapeEngine {
         int tmdbId;
         int tvdbId;
         String imdbId;
+        boolean validMovie;
         boolean fullMovie;
+
+        boolean hasIdentity() {
+            return tmdbId > 0 || tvdbId > 0 || imdbId != null;
+        }
     }
 
     private static final class NfoSidecar {

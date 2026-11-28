@@ -62,6 +62,12 @@ public final class MovieStorage {
                     + "remux|uhd|web[ ._-]?(?:dl|rip)|hdtv|dvd[ ._-]?rip|hdr10\\+?|hdr|hevc|"
                     + "x[ ._-]?26[45]|h[ ._-]?26[45]|av1|dts(?:-hd)?|truehd|aac|ddp|atmos)(?=$|[ ._\\])）】-])"
     );
+    private static final Pattern RELEASE_LABELS = Pattern.compile(
+            "(?i)(?:(?:nf|amzn|dsnp|atvp|dv|dovi|dolby[ ._-]+vision)(?:[ ._-]+|$))+"
+    );
+    private static final Pattern DOLBY_TAG = Pattern.compile(
+            "(?i)(?:^|[ ._-])(?:dv|dovi|dolby[ ._-]+vision)(?=$|[ ._-])"
+    );
     private static final Pattern[] STACK_PART = {
             Pattern.compile("(?i)^(.+?)[ ._-]*?(?:cd|dvd|dis[ck]|part|pt|file)[ ._-]*([0-9]{1,3})(.*)$"),
             Pattern.compile("(?i)^(.+?)[ ._-]*?(?:cd|dvd|dis[ck]|part|pt)[ ._-]*([a-h])($|[ ._-].*)"),
@@ -85,7 +91,7 @@ public final class MovieStorage {
         this.treeUri = treeUri;
         String documentId = DocumentsContract.getTreeDocumentId(treeUri);
         Uri documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId);
-        this.root = new Directory(documentUri, documentId, "", "");
+        this.root = new Directory(documentUri, documentId, "", "", null);
     }
 
     public static class Entry {
@@ -104,12 +110,14 @@ public final class MovieStorage {
 
     public static final class Directory extends Entry {
         public final String relativePath;
+        final Directory parent;
         private Map<String, Entry> children;
         private Map<String, Entry> childrenIgnoringCase;
 
-        Directory(Uri uri, String documentId, String displayName, String relativePath) {
+        Directory(Uri uri, String documentId, String displayName, String relativePath, Directory parent) {
             super(uri, documentId, displayName, Document.MIME_TYPE_DIR);
             this.relativePath = relativePath;
+            this.parent = parent;
         }
 
         private void replaceChildren(Map<String, Entry> entries) {
@@ -228,7 +236,7 @@ public final class MovieStorage {
                     if (foldedBase.endsWith(TRAILER_SUFFIX)) {
                         trailers.put(foldedBase.substring(0, foldedBase.length() - TRAILER_SUFFIX.length()),
                                 child.displayName);
-                    } else if (!EXTRA_SUFFIX.matcher(basename).find()) {
+                    } else if (isFeatureVideo(child.displayName)) {
                         videos.putIfAbsent(foldedBase, child);
                     }
                 }
@@ -340,6 +348,32 @@ public final class MovieStorage {
     public synchronized List<Entry> list(Directory directory) throws IOException {
         load(directory);
         return new ArrayList<>(directory.children.values());
+    }
+
+    synchronized Entry renameEntry(Directory directory, Entry expected, String newName, boolean cancellable)
+            throws IOException {
+        validateName(newName);
+        Map<String, Entry> children = queryChildren(directory, cancellable);
+        Entry current = children.get(expected.displayName);
+        if (current == null || !current.documentId.equals(expected.documentId)
+                || (current instanceof Directory) != (expected instanceof Directory)) {
+            throw new IOException("源文件或文件夹已变化 · " + expected.displayName);
+        }
+        if (current.displayName.equals(newName)) {
+            return current;
+        }
+        String targetKey = lower(newName);
+        for (Entry child : children.values()) {
+            if (child != current && lower(child.displayName).equals(targetKey)) {
+                throw new IOException("目标已存在 · " + newName);
+            }
+        }
+        directory.replaceChildren(children);
+        Entry moved = rename(directory, current, newName);
+        children.remove(current.displayName);
+        children.put(moved.displayName, moved);
+        directory.replaceChildren(children);
+        return moved;
     }
 
     ParcelFileDescriptor openVideo(Movie movie) throws IOException {
@@ -503,7 +537,7 @@ public final class MovieStorage {
 
     private static Entry entry(Directory parent, Uri uri, String documentId, String name, String mime) {
         if (Document.MIME_TYPE_DIR.equals(mime)) {
-            return new Directory(uri, documentId, name, childPath(parent, name));
+            return new Directory(uri, documentId, name, childPath(parent, name), parent);
         }
         return new Entry(uri, documentId, name, mime);
     }
@@ -564,7 +598,7 @@ public final class MovieStorage {
             renamed = DocumentsContract.renameDocument(resolver, entry.uri, newName);
             if (renamed != null) {
                 moved = stat(parent, renamed);
-                if (newName.equals(moved.displayName)) {
+                if (newName.equals(moved.displayName) && (moved instanceof Directory) == (entry instanceof Directory)) {
                     return moved;
                 }
             }
@@ -579,7 +613,8 @@ public final class MovieStorage {
             try {
                 Map<String, Entry> children = queryChildren(parent, false);
                 Entry target = children.get(newName);
-                if (target != null && !(target instanceof Directory) && !children.containsKey(entry.displayName)
+                if (target != null && (target instanceof Directory) == (entry instanceof Directory)
+                        && !children.containsKey(entry.displayName)
                         && (renamed == null || renamed.equals(target.uri))) {
                     return target;
                 }
@@ -676,8 +711,10 @@ public final class MovieStorage {
         }
         stripped = EMPTY_BRACKETS.matcher(stripped).replaceAll(" ");
 
+        boolean hasTechnicalSuffix = false;
         Matcher technical = RELEASE_TAG.matcher(stripped);
         if (technical.find() && !cleanTitle(stripped.substring(0, technical.start())).isEmpty()) {
+            hasTechnicalSuffix = true;
             stripped = stripped.substring(0, technical.start());
         }
         Matcher explicitYears = EXPLICIT_YEAR.matcher(stripped);
@@ -695,7 +732,10 @@ public final class MovieStorage {
                 String title = cleanTitle(stripped.substring(0, bareYears.start()));
                 String remainder = cleanTitle(stripped.substring(bareYears.end()));
                 int possibleYear = Integer.parseInt(bareYears.group(1));
-                if (!title.isEmpty() && remainder.isEmpty() && possibleYear <= Year.now().getValue() + 3) {
+                boolean releaseLabels = RELEASE_LABELS.matcher(remainder).matches()
+                        && (hasTechnicalSuffix || DOLBY_TAG.matcher(remainder).find());
+                if (!title.isEmpty() && (remainder.isEmpty() || releaseLabels)
+                        && possibleYear <= Year.now().getValue() + 3) {
                     year = possibleYear;
                     yearStart = bareYears.start();
                 }
@@ -764,9 +804,17 @@ public final class MovieStorage {
         return ILLEGAL_FILE_NAME_CHARS.matcher(title).replaceAll("_").replaceFirst("[. ]+$", "");
     }
 
-    private static boolean isVideo(String name) {
+    static boolean isVideo(String name) {
         int extensionStart = name.lastIndexOf('.');
         return extensionStart > 0 && VIDEO_EXTENSIONS.contains(lower(name.substring(extensionStart + 1)));
+    }
+
+    static boolean isFeatureVideo(String name) {
+        if (name.startsWith(".") || !isVideo(name)) {
+            return false;
+        }
+        String basename = stem(name);
+        return !lower(basename).endsWith(TRAILER_SUFFIX) && !EXTRA_SUFFIX.matcher(basename).find();
     }
 
     private static String stem(String name) {

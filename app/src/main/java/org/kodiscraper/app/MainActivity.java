@@ -103,6 +103,7 @@ public final class MainActivity extends Activity {
     private TextView log;
     private ProgressBar progress;
     private Button pickFolder;
+    private Button organizeMovies;
     private Button pickCollectionFolder;
     private Button clearCollectionFolder;
     private Button validate;
@@ -115,7 +116,6 @@ public final class MainActivity extends Activity {
     private EditText credential;
     private Spinner language;
     private Switch overwrite;
-    private Switch skipCompleted;
     private Switch actors;
     private Switch preferFolder;
     private Switch alternateFanart;
@@ -538,9 +538,16 @@ public final class MainActivity extends Activity {
         add(card, folderName, 7);
         pickFolder = button("设置搜索路径", appearance.tint, appearance.accent);
         pickFolder.setOnClickListener(view -> chooseFolder());
-        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-2, dp(45));
-        placement.topMargin = dp(11);
-        card.addView(pickFolder, placement);
+        pickFolder.setMinHeight(dp(48));
+        LinearLayout actions = horizontal();
+        actions.addView(pickFolder, new LinearLayout.LayoutParams(0, -2, 1f));
+        organizeMovies = button("整理与重命名", appearance.tint, appearance.accent);
+        organizeMovies.setMinHeight(dp(48));
+        organizeMovies.setOnClickListener(view -> previewMovieOrganization());
+        LinearLayout.LayoutParams organizeSpace = new LinearLayout.LayoutParams(0, -2, 1f);
+        organizeSpace.leftMargin = dp(8);
+        actions.addView(organizeMovies, organizeSpace);
+        add(card, actions, 11);
     }
 
     private void addConnection(LinearLayout column) {
@@ -778,12 +785,10 @@ public final class MainActivity extends Activity {
         alternateFanart = option("额外保存备用背景图（最多 " + ScrapeEngine.ALTERNATE_FANART_LIMIT + " 张）",
                 settings.getBoolean("alternate_fanart", false));
         add(card, alternateFanart, 0);
-        overwrite = option("更新已有 NFO 和图片", settings.getBoolean("overwrite", false));
+        overwrite = option("更新待刮削影片的已有资料", settings.getBoolean("overwrite", false));
         add(card, overwrite, 0);
         add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, appearance.muted, false), 2);
-        skipCompleted = option("跳过已刮削完成的电影", settings.getBoolean("skip_completed", false));
-        add(card, skipCompleted, 0);
-        add(card, text("本地已有可读取的 NFO、海报和背景图时跳过资料刮削。已开启的字幕下载仍会运行。",
+        add(card, text("一键刮削会先检查全部电影，资料齐全的影片仍可按设置补字幕。",
                 12, appearance.muted, false), 2);
 
         add(card, text("Kodi 合集资料目录", 14, appearance.foreground, true), 12);
@@ -879,6 +884,61 @@ public final class MainActivity extends Activity {
 
     private void chooseFolder() {
         chooseDirectory(PICK_FOLDER, folder == null ? MOVIES_LOCATION : folder);
+    }
+
+    private void previewMovieOrganization() {
+        if (busy || !requireFolder()) return;
+        Uri selected = folder;
+        boolean byFolder = preferFolder.isChecked();
+        begin(null, "正在查找可整理的电影…", () -> {
+            MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
+            MovieOrganizer.Plan plan = MovieOrganizer.preview(storage, byFolder);
+            return () -> {
+                runState.setText(plan.items().isEmpty() ? "没有可重命名的影片" : "重命名方案待确认");
+                showScraperDialog(() -> showOrganizationPreview(selected, plan));
+            };
+        });
+    }
+
+    private void showOrganizationPreview(Uri selected, MovieOrganizer.Plan plan) {
+        LinearLayout content = dialogContent();
+        add(content, text("可整理 " + plan.items().size() + " 部 · 跳过 " + plan.skipped().size() + " 项",
+                15, appearance.foreground, true), 0);
+        if (!plan.items().isEmpty()) {
+            add(content, text("关联的 Kodi 资料和字幕会随视频改名，其他文件保留。",
+                    13, appearance.muted, false), 7);
+        }
+        StringBuilder paths = new StringBuilder();
+        for (MovieOrganizer.Item item : plan.items()) {
+            paths.append(item.sourceVideo()).append("\n→ ").append(item.targetVideo()).append("\n\n");
+        }
+        for (MovieOrganizer.Skip skip : plan.skipped()) {
+            paths.append("跳过 · ").append(skip.path()).append("\n").append(skip.reason()).append("\n\n");
+        }
+        if (paths.length() > 0) {
+            TextView entries = text(paths.toString().trim(), 13, appearance.muted, false);
+            entries.setTextIsSelectable(true);
+            add(content, entries, 12);
+        }
+        ScrollView preview = new ScrollView(this);
+        preview.addView(content, new ScrollView.LayoutParams(-1, -2));
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("重命名预览").setView(preview)
+                .setNegativeButton(plan.items().isEmpty() ? "关闭" : "取消", null);
+        if (!plan.items().isEmpty()) {
+            dialog.setPositiveButton("确认重命名", (view, which) -> applyMovieOrganization(selected, plan));
+        }
+        dialog.show();
+    }
+
+    private void applyMovieOrganization(Uri selected, MovieOrganizer.Plan plan) {
+        if (busy || !selected.equals(folder)) return;
+        movies = Collections.emptyList();
+        needsReview.clear();
+        begin(null, "正在整理电影文件…", () -> {
+            MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
+            MovieOrganizer.Summary result = MovieOrganizer.apply(storage, plan, message -> post(() -> note(message)));
+            return () -> finishWithLog("重命名完成 · 已整理 " + result.renamed() + " 部 · 失败 " + result.failed() + " 部");
+        });
     }
 
     private void chooseDirectory(int request, Uri initial) {
@@ -1042,12 +1102,8 @@ public final class MainActivity extends Activity {
         if (!requireFolder()) {
             return;
         }
-        boolean skip = skipCompleted.isChecked();
-        MovieMetadataSource client = skip ? createMetadataClient() : clientOrNotify();
-        if (client == null) {
-            return;
-        }
-        if (skip && client.provider() == MovieMetadataSource.Provider.TMDB) saveCredential();
+        MovieMetadataSource client = createMetadataClient();
+        if (client.provider() == MovieMetadataSource.Provider.TMDB) saveCredential();
         Uri selectedFolder = folder;
         Uri selectedCollection = collectionFolder;
         String selectedLanguage = language();
@@ -1072,37 +1128,58 @@ public final class MainActivity extends Activity {
                     : new MovieStorage(getApplicationContext(), selectedCollection);
             ScrapeEngine engine = new ScrapeEngine(storage, collections, client,
                     selectedLanguage, replace, downloadActors, downloadAlternate);
+            List<MovieStorage.Movie> complete = new ArrayList<>();
+            List<MovieStorage.Movie> pending = new ArrayList<>();
+            for (int index = 0; index < scanned.size(); index++) {
+                ScrapeEngine.checkCancelled();
+                MovieStorage.Movie movie = scanned.get(index);
+                int position = index + 1;
+                post(() -> setProgress(position, scanned.size(), "检查本地 · " + movie.title));
+                (engine.isCompleteLocally(movie) ? complete : pending).add(movie);
+            }
+            post(() -> {
+                note("本地检查完成 · 资料齐全 " + complete.size() + " 部 · 待刮削 " + pending.size() + " 部");
+                if (!stopped && !pending.isEmpty()) {
+                    runState.setText("正在连接 " + client.provider().label + "…");
+                    progress.setIndeterminate(true);
+                }
+            });
+            if (!pending.isEmpty()) {
+                client.validate();
+                post(() -> {
+                    if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
+                    updateUi();
+                });
+            }
             Batch batch = new Batch();
+            batch.skipped = complete.size();
             SubtitleBatch subtitleBatch = new SubtitleBatch();
-            boolean validated = false;
-            for (MovieStorage.Movie movie : scanned) {
+            for (MovieStorage.Movie movie : pending) {
                 ScrapeEngine.checkCancelled();
                 int index = ++batch.started;
-                post(() -> setProgress(index, scanned.size(), movie.title));
-                boolean local = skip && engine.isCompleteLocally(movie);
-                if (!local && !validated) {
-                    client.validate();
-                    validated = true;
-                    post(() -> {
-                        if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
-                        updateUi();
-                    });
-                }
+                post(() -> setProgress(index, pending.size(), "刮削 · " + movie.title));
                 try (SubtitleWork work = startSubtitles(subtitles, storage, movie, 0)) {
-                    SubtitleQuery match = null;
-                    if (local) {
-                        batch.skipped++;
-                        post(() -> note("已跳过（本地资料齐全） · " + movie.relativePath));
-                    } else {
-                        match = scrapeBatchMovie(engine, movie, work, batch, scanned.size());
-                    }
+                    SubtitleQuery match = scrapeBatchMovie(engine, movie, work, batch, pending.size());
                     if (work != null) {
                         work.matched(match == null ? ScrapeEngine.subtitleQuery(storage, movie) : match);
                         recordSubtitles(movie, subtitleBatch, work::result);
                     }
                 }
             }
-            String summary = batch.summary(scanned.size(), scanned.size())
+            if (subtitles != null) {
+                for (int index = 0; index < complete.size(); index++) {
+                    ScrapeEngine.checkCancelled();
+                    MovieStorage.Movie movie = complete.get(index);
+                    int position = index + 1;
+                    post(() -> {
+                        setProgress(position, complete.size(), "补字幕 · " + movie.title);
+                        note("已跳过（本地资料齐全） · " + movie.relativePath);
+                    });
+                    SubtitleQuery query = ScrapeEngine.subtitleQuery(storage, movie);
+                    recordSubtitles(movie, subtitleBatch, () -> subtitles.download(query));
+                }
+            }
+            String summary = batch.summary(pending.size(), pending.size())
                     + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
             return () -> finishWithLog(summary);
         });
@@ -1497,7 +1574,6 @@ public final class MainActivity extends Activity {
                 .putBoolean("alternate_fanart", alternateFanart.isChecked())
                 .putBoolean("auto_subtitles", autoSubtitles.isChecked())
                 .putBoolean("prefer_folder", preferFolder.isChecked())
-                .putBoolean("skip_completed", skipCompleted.isChecked())
                 .putBoolean("overwrite", overwrite.isChecked()).apply();
     }
 
@@ -1637,6 +1713,7 @@ public final class MainActivity extends Activity {
             return;
         }
         pickFolder.setEnabled(!busy);
+        organizeMovies.setEnabled(!busy);
         validate.setEnabled(!busy);
         metadataSourceButton.setEnabled(!busy);
         manual.setEnabled(!busy);
@@ -1651,7 +1728,6 @@ public final class MainActivity extends Activity {
         pickCollectionFolder.setEnabled(!busy);
         clearCollectionFolder.setEnabled(!busy);
         overwrite.setEnabled(!busy);
-        skipCompleted.setEnabled(!busy);
         preferFolder.setEnabled(!busy);
         language.setEnabled(!busy);
         start.setEnabled(!busy || !stopped);
@@ -1702,7 +1778,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.8.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.9.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -1751,7 +1827,7 @@ public final class MainActivity extends Activity {
     private static String resultLabel(ScrapeEngine.Result result) {
         switch (result) {
             case WRITTEN: return "已写入";
-            case INCOMPLETE: return "部分图片待补";
+            case INCOMPLETE: return "有资料待补";
             case PRESERVED: return "已保留";
             default: return "待确认";
         }
@@ -1776,7 +1852,8 @@ public final class MainActivity extends Activity {
         }
 
         String summary(int completed, int total) {
-            return "处理 " + completed + "/" + total + " 部 · 写入 " + written + " · 待补图 "
+            String count = total == 0 ? "没有待刮削影片" : "处理 " + completed + "/" + total + " 部";
+            return count + " · 写入 " + written + " · 待补 "
                     + incomplete + " · 保留 " + preserved + " · 跳过 " + skipped + " · 待确认 " + review + " · 失败 " + failed;
         }
     }

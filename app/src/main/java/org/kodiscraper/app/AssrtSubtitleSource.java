@@ -27,6 +27,10 @@ final class AssrtSubtitleSource implements SubtitleSource {
     private static final String API_HOST = "api.assrt.net";
     private static final String BACKUP_API_HOST = "api.makedie.me";
     private static final long API_INTERVAL_NANOS = 3_050_000_000L;
+    private static final long BACKUP_COOLDOWN_NANOS = 5 * 60 * 1_000_000_000L;
+    private static final Object API_PACING = new Object();
+    private static long nextApiStart = System.nanoTime();
+    private static volatile long backupRetryAfter = System.nanoTime();
     private static final int MAX_SEARCHES = 3;
     private static final int MAX_DETAILS = 5;
     private static final int MAX_DOWNLOADS = 9;
@@ -62,9 +66,6 @@ final class AssrtSubtitleSource implements SubtitleSource {
 
     private final String token;
     private String activeApiHost = API_HOST;
-    private boolean backupTlsFailed;
-    private long lastApiStarted;
-    private boolean hasMadeApiRequest;
 
     AssrtSubtitleSource(String token) {
         this.token = token == null ? "" : token.trim();
@@ -79,12 +80,21 @@ final class AssrtSubtitleSource implements SubtitleSource {
         if (context.titles.isEmpty()) return new ArrayList<>();
 
         Map<Integer, Hit> hits = new LinkedHashMap<>();
+        IOException searchFailure = null;
         int searches = 0;
         for (Search search : searchQueries(query, context)) {
             checkRunning();
             String url = "search?q=" + SubtitleHttp.encode(search.text) + "&cnt=12&filelist=1";
             if (search.filename) url += "&is_file=1";
-            JSONArray entries = apiResults(url, "搜索");
+            JSONArray entries;
+            try {
+                entries = apiResults(url, "搜索");
+            } catch (IOException failure) {
+                checkRunning();
+                if (hits.isEmpty() || !hasTransportFailure(failure)) throw failure;
+                searchFailure = failure;
+                break;
+            }
             searches++;
             for (int i = 0; i < entries.length(); i++) {
                 JSONObject entry = entries.optJSONObject(i);
@@ -160,15 +170,17 @@ final class AssrtSubtitleSource implements SubtitleSource {
                     ? downloadFailure.getMessage() : "无法读取或校验字幕文件";
             throw new IOException("字幕文件下载失败 · " + reason, downloadFailure);
         }
+        if (tracks.isEmpty() && searchFailure != null) throw searchFailure;
         return tracks;
     }
 
     private static byte[] downloadFile(String url) throws IOException {
         try {
-            return SubtitleHttp.get(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
-        } catch (SubtitleHttp.ConnectionException interrupted) {
+            return SubtitleHttp.getFresh(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
+        } catch (IOException failure) {
             checkRunning();
-            return SubtitleHttp.get(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
+            if (!SubtitleHttp.isRetryableConnection(failure)) throw failure;
+            return SubtitleHttp.getFresh(url, null, null, SubtitleFiles.MAX_BYTES, "assrt.net", "makedie.me");
         }
     }
 
@@ -216,54 +228,92 @@ final class AssrtSubtitleSource implements SubtitleSource {
     }
 
     private JSONObject requestWithFallback(String path) throws IOException {
-        String firstHost = activeApiHost;
+        String firstHost = backupCoolingDown() ? API_HOST : activeApiHost;
         try {
-            return requestPreferredApi(firstHost, path);
+            return requestPreferredApi(firstHost, path, token);
         } catch (IOException firstError) {
             checkRunning();
-            if (!rememberBackupTlsFailure(firstHost, firstError) && !canFailOver(firstError)) {
+            if (!rememberBackupFailure(firstHost, firstError) && !canFailOver(firstError)) {
                 throw firstError;
             }
             String secondHost = firstHost.equals(API_HOST) ? BACKUP_API_HOST : API_HOST;
-            if (secondHost.equals(BACKUP_API_HOST) && backupTlsFailed) {
-                throw new IOException(firstHost + " · " + firstError.getMessage() + "；" + secondHost
-                        + " · 本轮因 HTTPS 连接失败已暂停", firstError);
+            if (secondHost.equals(BACKUP_API_HOST) && backupCoolingDown()) {
+                throw new IOException(firstHost + " · " + apiFailureReason(firstError) + "；" + secondHost
+                        + " · 线路故障后暂缓重连", firstError);
             }
+            JSONObject result;
             try {
-                JSONObject result = requestApi(secondHost, path, token);
-                if (result.optInt("status", -1) == 0) {
-                    activeApiHost = secondHost;
-                }
-                return result;
+                result = requestPreferredApi(secondHost, path, token);
             } catch (IOException secondError) {
                 checkRunning();
-                rememberBackupTlsFailure(secondHost, secondError);
-                if (secondError instanceof SubtitleHttp.HttpException && !canFailOver(secondError)) {
+                rememberBackupFailure(secondHost, secondError);
+                if (secondError instanceof SubtitleHttp.HttpException response
+                        && (response.apiStatus == 101 || response.apiStatus == 20900
+                            || response.apiStatus == 30900 || response.statusCode == 429
+                            || (secondHost.equals(API_HOST) && !canFailOver(response)))) {
                     throw secondError;
                 }
-                throw new IOException(firstHost + " · " + firstError.getMessage() + "；"
-                        + secondHost + " · " + secondError.getMessage(), secondError);
+                throw bothRoutesFailed(firstHost, firstError, secondHost, secondError);
             }
+            int status = result.optInt("status", -1);
+            if (status == 0) {
+                activeApiHost = secondHost;
+                markBackupReachable(secondHost);
+            } else if (secondHost.equals(BACKUP_API_HOST) && status != 101 && status != 20900 && status != 30900) {
+                throw bothRoutesFailed(firstHost, firstError, secondHost, new IOException(apiErrorMessage(status, 200)));
+            }
+            return result;
         }
     }
 
-    private JSONObject requestPreferredApi(String host, String path) throws IOException {
+    private JSONObject requestPreferredApi(String host, String path, String credential) throws IOException {
         try {
-            return requestApi(host, path, token);
+            return requestApi(host, path, credential);
         } catch (IOException failure) {
             checkRunning();
-            if (!SubtitleHttp.isRetryableConnection(failure) && !isGatewayFailure(failure)) {
+            if (!host.equals(API_HOST)
+                    || (!SubtitleHttp.isRetryableConnection(failure) && !isGatewayFailure(failure))) {
                 throw failure;
             }
-            return requestApi(host, path, token);
+            return requestApi(host, path, credential);
         }
     }
 
-    private boolean rememberBackupTlsFailure(String host, IOException failure) {
-        if (host.equals(BACKUP_API_HOST) && failure.getCause() instanceof SSLException) {
-            backupTlsFailed = true;
-            activeApiHost = API_HOST;
-            return true;
+    private static IOException bothRoutesFailed(String firstHost, IOException firstError,
+                                                String secondHost, IOException secondError) {
+        IOException result = new IOException(firstHost + " · " + apiFailureReason(firstError) + "；"
+                + secondHost + " · " + apiFailureReason(secondError), firstError);
+        result.addSuppressed(secondError);
+        return result;
+    }
+
+    private static String apiFailureReason(IOException failure) {
+        return failure instanceof SubtitleHttp.HttpException response
+                ? apiErrorMessage(response.apiStatus, response.statusCode) : failure.getMessage();
+    }
+
+    private boolean rememberBackupFailure(String host, IOException failure) {
+        if (!host.equals(BACKUP_API_HOST)
+                || (!canFailOver(failure) && !(failure.getCause() instanceof SSLException))) {
+            return false;
+        }
+        backupRetryAfter = System.nanoTime() + BACKUP_COOLDOWN_NANOS;
+        activeApiHost = API_HOST;
+        return true;
+    }
+
+    private static boolean backupCoolingDown() {
+        return backupRetryAfter - System.nanoTime() > 0;
+    }
+
+    private static void markBackupReachable(String host) {
+        if (host.equals(BACKUP_API_HOST)) backupRetryAfter = System.nanoTime();
+    }
+
+    private static boolean hasTransportFailure(IOException failure) {
+        Throwable cause = failure;
+        for (int depth = 0; cause != null && depth < 8; depth++, cause = cause.getCause()) {
+            if (cause instanceof IOException current && canFailOver(current)) return true;
         }
         return false;
     }
@@ -284,7 +334,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
     private JSONObject requestApi(String host, String path, String credential) throws IOException {
         waitForQuota();
         String bearer = credential.isEmpty() ? null : "Bearer " + credential;
-        return SubtitleHttp.json("https://" + host + "/v1/" + path,
+        return SubtitleHttp.jsonFresh("https://" + host + "/v1/" + path,
                 bearer == null ? null : "Authorization", bearer, host);
     }
 
@@ -299,12 +349,16 @@ final class AssrtSubtitleSource implements SubtitleSource {
     private String probeHost(String host, String credential) throws IOException {
         String result;
         try {
-            JSONObject response = requestApi(host, "user/quota", credential);
-            result = probeResult(response.optInt("status", -1), 200, credential);
+            JSONObject response = requestPreferredApi(host, "user/quota", credential);
+            int status = response.optInt("status", -1);
+            if (status >= 0) markBackupReachable(host);
+            result = probeResult(status, 200, credential);
         } catch (SubtitleHttp.HttpException error) {
+            if (!rememberBackupFailure(host, error) && error.apiStatus >= 0) markBackupReachable(host);
             result = probeResult(error.apiStatus, error.statusCode, credential);
         } catch (IOException error) {
             checkRunning();
+            rememberBackupFailure(host, error);
             result = error.getMessage();
         }
         return host + " · " + result;
@@ -339,11 +393,18 @@ final class AssrtSubtitleSource implements SubtitleSource {
         return "API 请求失败（HTTP " + httpStatus + (status > 0 ? "，状态 " + status : "") + "）";
     }
 
-    private void waitForQuota() throws InterruptedIOException {
-        checkRunning();
-        while (hasMadeApiRequest) {
-            long remaining = API_INTERVAL_NANOS - (System.nanoTime() - lastApiStarted);
-            if (remaining <= 0) break;
+    private static void waitForQuota() throws InterruptedIOException {
+        while (true) {
+            checkRunning();
+            long remaining;
+            synchronized (API_PACING) {
+                long now = System.nanoTime();
+                remaining = nextApiStart - now;
+                if (remaining <= 0) {
+                    nextApiStart = now + API_INTERVAL_NANOS;
+                    return;
+                }
+            }
             try {
                 Thread.sleep(remaining / 1_000_000L, (int) (remaining % 1_000_000L));
             } catch (InterruptedException interrupted) {
@@ -351,8 +412,6 @@ final class AssrtSubtitleSource implements SubtitleSource {
                 checkRunning();
             }
         }
-        lastApiStarted = System.nanoTime();
-        hasMadeApiRequest = true;
     }
 
     private static JSONObject findDetail(JSONArray entries, int id) {

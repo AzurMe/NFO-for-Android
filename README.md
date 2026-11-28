@@ -20,9 +20,9 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 1. 从 Releases 的 **Assets** 下载最新的 `KodiMovieScraper-<版本>.apk`。Android 如果提示安装权限，可为打开 APK 的应用开启「允许安装未知应用」。
 2. 打开应用，点 **设置搜索路径**，在系统文件夹选择器里选中 `内部存储 / Movies` 或其他可写目录，再授权访问。应用会记住该目录并扫描其子文件夹。
 3. 在 **影片资料来源** 选择 TMDB 或 TheTVDB，填入对应凭据并选好资料语言。凭据由 Android Keystore 保护并保存在本机。
-4. 点 **一键刮削**。如果有同名影片或自动匹配不明确，点 **手动匹配影片**，用片名、年份、所选来源的电影 ID 或 IMDb ID 查找。手动确认写入会更新该影片的资料和可用图片。
-5. 如果需要批量更新旧资料，在设置中启用 **更新已有 NFO 和图片**。应用保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，该影片会报错并保留原文件。
-6. 想略过已有资料的电影时，在 **刮削设置** 开启 **跳过已刮削完成的电影**。一键刮削会检查有效的电影 NFO 和可读取的海报、背景图，两项开关同时开启时会先判断是否跳过。若要补演员头像、备用图或其他附加素材，可关闭跳过开关后再运行。
+4. 点 **一键刮削**。应用先遍历选中的目录，检查全部影片的本地电影 NFO、海报和背景图，再刮削没有资料或资料不完整的影片。资料全部齐全时可直接完成影片资料检查，无需联系资料服务器。
+5. 可以在 **刮削设置** 启用 **更新待刮削影片的已有资料**。更新时保留旧 NFO 里的观看记录、续播点、个人评分、排序标题、标签和自定义字段。遇到无法安全解析的旧 NFO 时，会保留原文件并提示处理结果。
+6. 同名或自动匹配不明确的影片可以点 **手动匹配影片**，用片名、年份、所选来源的电影 ID 或 IMDb ID 查找。手动确认写入可刷新资料齐全的影片，也可补演员头像和备用图。
 
 **刮削记录**显示本次任务的进展，开始新任务时会清空这一栏。点旁边的 **历史日志** 可查看保存在设备上的最近 200 条记录，重启应用后仍可查看。
 
@@ -35,7 +35,7 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 - **TMDB** 是默认来源。填写自己的 **API Key** 或 **API Read Access Token**。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
 - **TheTVDB** 可独立使用。选择后，点 **配置 TheTVDB**，填写自己的 **v4 API Key**，订阅密钥还需填写对应 **PIN**。用同卡片里的 **测试连接** 验证凭据。[TheTVDB 密钥设置](https://www.thetvdb.com/dashboard/account/apikey) · [TheTVDB API 文档](https://thetvdb.github.io/v4-api/)
 - 两个来源使用相同的 Kodi NFO 格式、图片命名和字幕流程。TheTVDB 的翻译、演职员和图片取决于该片在来源中的覆盖情况。缺少本地海报或背景图会提示待补。TheTVDB 的热度值不写入影片评分。需要评分和合集时，可在 **配置 TheTVDB** 启用 **使用已配置的 TMDB 补齐评分和合集**。应用会匹配影片编号后再补充这些字段，已有 NFO 评分仍会保留。
-- 切换资料来源后，需要重新生成旧 NFO 时可使用 **手动匹配影片**，或关闭 **跳过已刮削完成的电影** 并开启 **更新已有 NFO 和图片**。电影推送继续使用 TMDB。
+- 切换资料来源后，可以使用 **手动匹配影片** 重新生成资料齐全的旧 NFO。电影推送继续使用 TMDB。
 
 Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/)
 
@@ -51,9 +51,15 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 2. **伪射手**可在 **设置字幕来源** 中填写用户面板提供的 API Token。字幕服务由 ASSRT 提供。[ASSRT](https://assrt.net/) · [API 文档](https://secure.assrt.net/api/doc)
 3. **SubDL**可填写自己的 API Key，按电影 ID 或片名及年份查找简体和繁体字幕。[SubDL](https://subdl.com/) · [API 文档](https://subdl.com/developers)
 
-出现网络报错时，可以在 **中文字幕** 区点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索或获取详情时遇到连接重置、超时或解析失败，应用会尝试另一条 HTTPS 线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
+出现网络报错时，可以在 **中文字幕** 区点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索、获取详情或下载时遇到连接重置，应用会重新建立 HTTPS 连接并重试。主域名持续出错时，查询会尝试官方备用线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
 
 支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。刮削记录会列出新保存字幕的来源和文件名。已有文件会保留，重复内容会跳过并标注本次匹配到的来源。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
+
+## 文件整理与重命名
+
+在 **电影搜索路径** 区点 **整理与重命名**，预览当前库中可整理的影片，核对改名前后的路径后点 **确认重命名**。以 `Dune.Part.One.2021.2160p.WEB-DL.HDR.HEVC` 为例，文件夹和主视频会统一为 `Dune.Part.One.2021`，视频保留原 `.mp4` 或 `.mkv` 扩展名。
+
+整理会保留文件内容，并随视频改名同步其可识别的 Kodi 旁置文件和字幕。片名或年份无法确定、多个主视频、分段影片和同名冲突都会列入跳过项。已经加入 Kodi 资料库的影片改名后，可以更新资料库使其读取新路径。
 
 ## 文件命名和输出
 
@@ -96,6 +102,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.9.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.9.0)
+
+- 一键刮削先完成本地资料检查和筛选，再处理未刮削或资料不完整的影片。
+- 新增电影文件夹和视频的批量重命名预览，按片名和年份整理并同步匹配的旁置资料。
+- 改进伪射手连接重置后的 HTTPS 恢复和网络诊断。
 
 ### [v1.8.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.8.0)
 
