@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashSet;
@@ -23,6 +24,10 @@ import java.util.regex.Pattern;
 final class SubtitleFiles {
     static final int MAX_BYTES = 4 * 1024 * 1024;
     private static final String SUBTITLE_DIRECTORY = "Subs";
+    private static final Set<String> LOCAL_SUBTITLE_DIRECTORIES = new HashSet<>(Arrays.asList(
+            "subs", "sub", "subtitles", "subtitle", "vobsubs", "vobsub"));
+    private static final Set<String> OTHER_LOCAL_EXTENSIONS = new HashSet<>(Arrays.asList(
+            "sub", "smi", "sami", "sup", "mpl", "ttml", "scc"));
     private static final String CHINESE_SUFFIX = ".CHN";
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Charset BIG5 = Charset.forName("Big5");
@@ -65,6 +70,54 @@ final class SubtitleFiles {
 
     static boolean supportsFilename(String filename) {
         return !extension(filename).isEmpty();
+    }
+
+    static boolean hasLocalSubtitle(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
+        boolean ownFolder = movie.singleMovieInDirectory && movie.directory.parent != null;
+        String basename = movie.basename().toLowerCase(Locale.ROOT);
+        String videoStem = stem(movie.displayName.toLowerCase(Locale.ROOT));
+        List<MovieStorage.Entry> entries = storage.list(movie.directory);
+        if (hasTrack(storage, entries, ownFolder, basename, videoStem)) return true;
+        for (MovieStorage.Entry entry : entries) {
+            checkCancelled();
+            if (entry instanceof MovieStorage.Directory folder
+                    && LOCAL_SUBTITLE_DIRECTORIES.contains(entry.displayName.toLowerCase(Locale.ROOT))) {
+                List<MovieStorage.Entry> tracks = storage.list(folder);
+                if (hasTrack(storage, tracks, ownFolder, basename, videoStem)) return true;
+                for (MovieStorage.Entry child : tracks) {
+                    checkCancelled();
+                    if (child instanceof MovieStorage.Directory language && !child.displayName.startsWith(".")
+                            && hasTrack(storage, storage.list(language), ownFolder, basename, videoStem)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasTrack(MovieStorage storage, List<MovieStorage.Entry> entries, boolean ownFolder,
+                                    String basename, String videoStem) throws IOException {
+        for (MovieStorage.Entry entry : entries) {
+            checkCancelled();
+            if (entry instanceof MovieStorage.Directory || entry.displayName.startsWith(".")) continue;
+            String name = entry.displayName.toLowerCase(Locale.ROOT);
+            int dot = name.lastIndexOf('.');
+            if (dot <= 0 || (!supportsFilename(name) && !OTHER_LOCAL_EXTENSIONS.contains(name.substring(dot + 1)))) {
+                continue;
+            }
+            String trackStem = name.substring(0, dot);
+            if ((ownFolder || matchesVideo(trackStem, basename) || matchesVideo(trackStem, videoStem))
+                    && storage.hasContent(entry)) return true;
+        }
+        return false;
+    }
+
+    private static boolean matchesVideo(String track, String video) {
+        return track.equals(video) || track.startsWith(video + ".");
+    }
+
+    private static String stem(String filename) {
+        int dot = filename.lastIndexOf('.');
+        return dot > 0 ? filename.substring(0, dot) : filename;
     }
 
     static Track validate(String filename, byte[] payload) throws IOException {

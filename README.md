@@ -8,7 +8,7 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 ## 电影海报墙
 
-首页从授权目录读取本地影片资料，按每行两张海报竖向排列。它显示已有有效电影 NFO、海报和背景图的影片。顶部显示常用标签，其余标签在 **更多标签** 中。标签取自 Kodi 使用的 NFO `<tag>` 字段。只存于 Kodi 资料库的标签可先导出到影片旁的 NFO，再刷新海报墙。应用打开、刮削或重命名后会自动刷新。[Kodi 电影 NFO 字段](https://kodi.wiki/view/NFO_files/Movies)
+首页从授权目录读取本地影片资料，按每行两张海报竖向排列。它显示已有有效电影 NFO、海报和背景图的影片。顶部按 Kodi NFO 的 `<genre>` 字段筛选，显示常用电影类型，其余可在 **更多类型** 中选择。应用打开、刮削或重命名后会自动刷新。[Kodi 电影 NFO 字段](https://kodi.wiki/view/NFO_files/Movies)
 
 点海报即可查看本地 NFO 中的剧情、上映日期、片长、评分、类型、标签和演职员。详情在本地读取，无需联网。
 
@@ -53,6 +53,8 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 
 在侧边栏打开 **字幕下载器**。开启 **随一键刮削和手动匹配下载**，或点 **仅下载字幕** 给已有电影补字幕。仅下载字幕可独立运行，无需填写 TMDB 凭据。
 
+默认开启 **跳过已有外挂字幕的电影**。应用先扫描电影目录及 `Subs`、`Subtitles` 等字幕子目录，已有任一语言的非空外挂字幕就跳过。多部影片共用一个目录时按视频文件名识别对应的字幕。视频内嵌字幕不参与检查。关闭开关后可继续为已有其他字幕的影片补下载中文字幕。
+
 开启随任务下载后，影片资料和字幕可并行处理。每部影片的记录先显示资料结果，再显示字幕结果。被跳过资料刮削的电影仍可下载字幕。
 
 应用按以下顺序查找，每部电影从第一个有可用结果的来源下载最多 3 条。片名匹配的结果可在 Kodi 播放时切换，方便选择与片源时间轴最合适的一条。
@@ -62,6 +64,8 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 3. **SubDL**可填写自己的 API Key，按电影 ID 或片名及年份查找简体和繁体字幕。[SubDL](https://subdl.com/) · [API 文档](https://subdl.com/developers)
 
 出现网络报错时，可以在 **字幕下载器** 点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索、获取详情或下载时遇到连接重置，应用会重新建立 HTTPS 连接并重试。主域名持续出错时，查询会尝试官方备用线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
+
+主域名在带 Token 请求时反复被重置，连接检测会再发一次无 Token 的对照请求，并在报告和日志中显示结果。
 
 ## 导出调试日志
 
@@ -116,6 +120,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.13.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.13.0)
+
+- 海报墙按 Kodi NFO 的电影类型筛选。
+- 字幕任务先检查本地外挂字幕，默认跳过已有外挂字幕的电影，可在字幕下载器关闭。
+- 伪射手主线路反复重置时，连接检测增加无 Token 对照。
 
 ### [v1.12.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.12.0)
 

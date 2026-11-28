@@ -28,26 +28,26 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 final class PosterWallScreen implements AutoCloseable {
-    private static final int TOP_TAGS = 7;
-    private static final Object MORE_TAGS = new Object();
+    private static final int TOP_GENRES = 7;
+    private static final Object MORE_GENRES = new Object();
     private final MainActivity activity;
     private final AppAppearance appearance;
     private final LinearLayout root;
-    private final HorizontalScrollView tagScroll;
-    private final LinearLayout tags;
+    private final HorizontalScrollView genreScroll;
+    private final LinearLayout genreChips;
     private final TextView status;
     private final Button chooseFolder;
     private final GridView grid;
     private final PosterAdapter adapter = new PosterAdapter();
     private MoviePosterLoader posters;
     private List<ScrapeEngine.LibraryMovie> library = Collections.emptyList();
-    private List<String> tagLabels = Collections.emptyList();
+    private List<String> genreLabels = Collections.emptyList();
     private Thread scan;
     private Thread detailRead;
     private AlertDialog movieDetails;
     private AlertDialog trailerDialog;
     private Uri directory;
-    private String selectedTag;
+    private String selectedGenre;
     private boolean closed;
 
     PosterWallScreen(MainActivity activity, Runnable refresh, Runnable pickFolder, Runnable organize) {
@@ -67,13 +67,13 @@ final class PosterWallScreen implements AutoCloseable {
         reloadSpace.leftMargin = activity.dp(6);
         actions.addView(reload, reloadSpace);
         root.addView(activity.createToolbar("电影海报墙", actions));
-        tagScroll = new HorizontalScrollView(activity);
-        tagScroll.setVisibility(View.GONE);
-        tagScroll.setHorizontalScrollBarEnabled(false);
-        tags = activity.horizontal();
-        tags.setPadding(activity.dp(14), activity.dp(8), activity.dp(14), activity.dp(5));
-        tagScroll.addView(tags);
-        root.addView(tagScroll, new LinearLayout.LayoutParams(-1, -2));
+        genreScroll = new HorizontalScrollView(activity);
+        genreScroll.setVisibility(View.GONE);
+        genreScroll.setHorizontalScrollBarEnabled(false);
+        genreChips = activity.horizontal();
+        genreChips.setPadding(activity.dp(14), activity.dp(8), activity.dp(14), activity.dp(5));
+        genreScroll.addView(genreChips);
+        root.addView(genreScroll, new LinearLayout.LayoutParams(-1, -2));
         status = activity.text("", 13, appearance.muted, false);
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         status.setPadding(activity.dp(16), activity.dp(3), activity.dp(16), activity.dp(8));
@@ -104,7 +104,7 @@ final class PosterWallScreen implements AutoCloseable {
         scan = null;
         if (!Objects.equals(directory, tree)) {
             directory = tree;
-            selectedTag = null;
+            selectedGenre = null;
             replaceMovies(Collections.emptyList());
         }
         chooseFolder.setVisibility(tree == null ? View.VISIBLE : View.GONE);
@@ -157,31 +157,31 @@ final class PosterWallScreen implements AutoCloseable {
         Map<String, Integer> counts = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (ScrapeEngine.LibraryMovie movie : found) {
             Set<String> labels = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-            labels.addAll(movie.tags());
+            labels.addAll(movie.genres());
             for (String label : labels) counts.merge(label, 1, Integer::sum);
         }
-        tagLabels = new ArrayList<>(counts.keySet());
-        tagLabels.sort(Comparator.comparingInt((String label) -> counts.get(label)).reversed()
+        genreLabels = new ArrayList<>(counts.keySet());
+        genreLabels.sort(Comparator.comparingInt((String label) -> counts.get(label)).reversed()
                 .thenComparing(String.CASE_INSENSITIVE_ORDER));
-        if (selectedTag != null && !counts.containsKey(selectedTag)) selectedTag = null;
-        rebuildTags();
+        if (selectedGenre != null && !counts.containsKey(selectedGenre)) selectedGenre = null;
+        rebuildGenres();
         filter();
     }
 
-    private void rebuildTags() {
-        tags.removeAllViews();
-        tagScroll.setVisibility(tagLabels.isEmpty() ? View.GONE : View.VISIBLE);
-        if (tagLabels.isEmpty()) return;
-        addTag("全部", null);
-        List<String> featured = tagLabels.subList(0, Math.min(TOP_TAGS, tagLabels.size()));
-        for (String tag : featured) addTag(tag, tag);
-        if (selectedTag != null && featured.stream().noneMatch(selectedTag::equalsIgnoreCase)) {
-            addTag(selectedTag, selectedTag);
+    private void rebuildGenres() {
+        genreChips.removeAllViews();
+        genreScroll.setVisibility(genreLabels.isEmpty() ? View.GONE : View.VISIBLE);
+        if (genreLabels.isEmpty()) return;
+        addGenre("全部", null);
+        List<String> featured = genreLabels.subList(0, Math.min(TOP_GENRES, genreLabels.size()));
+        for (String genre : featured) addGenre(genre, genre);
+        if (selectedGenre != null && featured.stream().noneMatch(selectedGenre::equalsIgnoreCase)) {
+            addGenre(selectedGenre, selectedGenre);
         }
-        if (tagLabels.size() > TOP_TAGS) addTag("更多标签", MORE_TAGS);
+        if (genreLabels.size() > TOP_GENRES) addGenre("更多类型", MORE_GENRES);
     }
 
-    private void addTag(String label, Object value) {
+    private void addGenre(String label, Object value) {
         Button chip = activity.button(label, appearance.surface, appearance.muted);
         chip.setTextSize(13);
         chip.setMaxWidth(activity.dp(210));
@@ -189,41 +189,41 @@ final class PosterWallScreen implements AutoCloseable {
         chip.setEllipsize(TextUtils.TruncateAt.END);
         chip.setTag(value);
         chip.setOnClickListener(view -> {
-            if (value == MORE_TAGS) {
-                showAllTags();
+            if (value == MORE_GENRES) {
+                showAllGenres();
                 return;
             }
-            selectedTag = (String) value;
+            selectedGenre = (String) value;
             filter();
         });
         LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-2, activity.dp(40));
         space.rightMargin = activity.dp(6);
-        tags.addView(chip, space);
+        genreChips.addView(chip, space);
     }
 
-    private void showAllTags() {
-        String[] choices = tagLabels.toArray(new String[0]);
-        new AlertDialog.Builder(activity).setTitle("Kodi 标签")
+    private void showAllGenres() {
+        String[] choices = genreLabels.toArray(new String[0]);
+        new AlertDialog.Builder(activity).setTitle("电影类型")
                 .setItems(choices, (dialog, index) -> {
-                    selectedTag = choices[index];
-                    rebuildTags();
+                    selectedGenre = choices[index];
+                    rebuildGenres();
                     filter();
                 }).setNegativeButton("关闭", null).show();
     }
 
     private void filter() {
-        for (int index = 0; index < tags.getChildCount(); index++) {
-            Button chip = (Button) tags.getChildAt(index);
-            if (chip.getTag() == MORE_TAGS) continue;
+        for (int index = 0; index < genreChips.getChildCount(); index++) {
+            Button chip = (Button) genreChips.getChildAt(index);
+            if (chip.getTag() == MORE_GENRES) continue;
             String value = (String) chip.getTag();
-            boolean active = value == null ? selectedTag == null : value.equalsIgnoreCase(selectedTag);
+            boolean active = value == null ? selectedGenre == null : value.equalsIgnoreCase(selectedGenre);
             chip.setSelected(active);
             chip.setTextColor(active ? appearance.accent : appearance.muted);
             chip.setBackground(activity.shape(active ? appearance.tint : appearance.surface, 12, appearance.border));
         }
         List<ScrapeEngine.LibraryMovie> visible = new ArrayList<>();
         for (ScrapeEngine.LibraryMovie movie : library) {
-            if (selectedTag == null || movie.tags().stream().anyMatch(selectedTag::equalsIgnoreCase)) visible.add(movie);
+            if (selectedGenre == null || movie.genres().stream().anyMatch(selectedGenre::equalsIgnoreCase)) visible.add(movie);
         }
         adapter.visible = visible;
         adapter.notifyDataSetChanged();

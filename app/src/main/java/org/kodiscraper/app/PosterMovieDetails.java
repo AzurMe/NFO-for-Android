@@ -36,7 +36,7 @@ final class PosterMovieDetails {
         if (!ageRating.isEmpty()) facts.add(ageRating);
         line(String.join(" · ", facts), 14, appearance.muted, false, 5);
         line(rating(fields), 14, appearance.foreground, true, 6);
-        line(String.join(" · ", values(fields, "genre")), 14, appearance.muted, false, 6);
+        line(String.join(" · ", movie.genres()), 14, appearance.muted, false, 6);
         if (!movie.tags().isEmpty()) line("标签 · " + String.join(" · ", movie.tags()), 13, appearance.muted, false, 6);
 
         TrailerPlayer.Source trailer = TrailerPlayer.source(movie.localTrailer(), value(fields, "trailer"));

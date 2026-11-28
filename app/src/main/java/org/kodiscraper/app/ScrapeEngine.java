@@ -87,7 +87,7 @@ final class ScrapeEngine {
         return localArtwork(storage, movie, type) != null;
     }
 
-    record LibraryMovie(String title, int year, List<String> tags, Uri poster, MovieStorage.Entry nfo,
+    record LibraryMovie(String title, int year, List<String> genres, List<String> tags, Uri poster, MovieStorage.Entry nfo,
                         Uri localTrailer) {}
 
     static LibraryMovie libraryMovie(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
@@ -101,7 +101,7 @@ final class ScrapeEngine {
             MovieStorage.Entry trailer = movie.localTrailerPath == null ? null
                     : storage.find(movie.directory, movie.localTrailerPath);
             return new LibraryMovie(nfo.title, nfo.year > 0 ? nfo.year : movie.year,
-                    new ArrayList<>(nfo.tags), poster.uri, sidecar.entry, trailer == null ? null : trailer.uri);
+                    new ArrayList<>(nfo.genres), new ArrayList<>(nfo.tags), poster.uri, sidecar.entry, trailer == null ? null : trailer.uri);
         } catch (IOException unreadable) {
             checkCancelled();
             DebugLog.failure("library-entry", unreadable);
@@ -685,12 +685,13 @@ final class ScrapeEngine {
                 if (tag.equals("title")) {
                     String title = parser.nextText().trim();
                     if (!title.isEmpty()) ids.title = title;
-                } else if (tag.equals("tag")) {
-                    if ("true".equalsIgnoreCase(parser.getAttributeValue(null, "clear"))) ids.tags.clear();
-                    // Kodi separates multiple values inside one tag with its default video separator.
+                } else if (tag.equals("genre") || tag.equals("tag")) {
+                    Set<String> values = tag.equals("genre") ? ids.genres : ids.tags;
+                    if ("true".equalsIgnoreCase(parser.getAttributeValue(null, "clear"))) values.clear();
+                    // Use Kodi's default separator when one element contains several values.
                     for (String value : parser.nextText().split(" / ")) {
                         String trimmed = value.trim();
-                        if (!trimmed.isEmpty()) ids.tags.add(trimmed);
+                        if (!trimmed.isEmpty()) values.add(trimmed);
                     }
                 } else if (tag.equals("year") || tag.equals("premiered")) {
                     String value = parser.nextText().trim();
@@ -782,6 +783,7 @@ final class ScrapeEngine {
     private static final class Identifiers {
         String title = "";
         int year;
+        final Set<String> genres = new LinkedHashSet<>();
         final Set<String> tags = new LinkedHashSet<>();
         int tmdbId;
         int tvdbId;

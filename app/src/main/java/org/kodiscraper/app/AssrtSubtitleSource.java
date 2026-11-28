@@ -344,43 +344,52 @@ final class AssrtSubtitleSource implements SubtitleSource {
 
     record Diagnostic(String report, boolean reachable) {}
 
-    private record Route(String result, boolean reachable) {}
+    private record Route(String result, boolean reachable, boolean reset) {}
 
     Diagnostic diagnoseRoutes() throws IOException {
         String credential = TOKEN.matcher(token).matches() ? token : "";
         String heading = "伪射手 API · " + (credential.isEmpty()
                 ? token.isEmpty() ? "未填写 Token" : "Token 格式无效"
                 : "检测 Token");
-        Route primary = probeHost(API_HOST, credential);
-        Route backup = probeHost(BACKUP_API_HOST, credential);
-        boolean reachable = primary.reachable() || backup.reachable();
+        Route primary = probeHost(API_HOST, credential, true);
+        Route control = !credential.isEmpty() && primary.reset() ? probeHost(API_HOST, "", false) : null;
+        Route backup = probeHost(BACKUP_API_HOST, credential, true);
+        boolean reachable = primary.reachable() || backup.reachable() || (control != null && control.reachable());
         DebugLog.event("assrt-probe", "result=" + (reachable ? "api_response" : "unreachable"));
-        return new Diagnostic(heading + "\n" + primary.result() + "\n" + backup.result(), reachable);
+        String comparison = control == null ? "" : "\n" + control.result();
+        return new Diagnostic(heading + "\n" + primary.result() + comparison + "\n" + backup.result(), reachable);
     }
 
-    private Route probeHost(String host, String credential) throws IOException {
+    private Route probeHost(String host, String credential, boolean allowRetry) throws IOException {
+        String mode = credential.isEmpty() ? "anonymous" : "authenticated";
+        String context = "host=" + host + " mode=" + mode;
+        String label = host + (allowRetry ? "" : "（无 Token 对照）");
         String result;
         boolean reachable;
+        boolean reset = false;
         try {
-            JSONObject response = requestPreferredApi(host, "user/quota", credential);
+            JSONObject response = allowRetry ? requestPreferredApi(host, "user/quota", credential)
+                    : requestApi(host, "user/quota", credential);
             int status = response.optInt("status", -1);
             if (status >= 0) markBackupReachable(host);
             result = probeResult(status, 200, credential);
             reachable = status >= 0;
-            DebugLog.event("assrt-probe", "host=" + host + " http=200 api_status=" + status);
+            DebugLog.event("assrt-probe", context + " http=200 api_status=" + status);
         } catch (SubtitleHttp.HttpException error) {
             if (!rememberBackupFailure(host, error) && error.apiStatus >= 0) markBackupReachable(host);
             result = probeResult(error.apiStatus, error.statusCode, credential);
             reachable = error.apiStatus >= 0 || error.statusCode == 401 || error.statusCode == 429;
-            DebugLog.event("assrt-probe", "host=" + host + " http=" + error.statusCode + " api_status=" + error.apiStatus);
+            DebugLog.event("assrt-probe", context + " http=" + error.statusCode + " api_status=" + error.apiStatus);
         } catch (IOException error) {
             checkRunning();
             rememberBackupFailure(host, error);
             result = error.getMessage();
             reachable = false;
-            DebugLog.event("assrt-probe", "host=" + host + " result=" + DebugLog.networkReason(error));
+            String reason = DebugLog.networkReason(error);
+            reset = "connection_reset".equals(reason);
+            DebugLog.event("assrt-probe", context + " result=" + reason);
         }
-        return new Route(host + " · " + result, reachable);
+        return new Route(label + " · " + result, reachable, reset);
     }
 
     private static String probeResult(int status, int httpStatus, String credential) {

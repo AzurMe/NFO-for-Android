@@ -407,6 +407,16 @@ public final class MovieStorage {
         return read(resolver, entry, limit);
     }
 
+    boolean hasContent(Entry entry) throws IOException {
+        checkCancelled();
+        try (InputStream input = resolver.openInputStream(entry.uri)) {
+            if (input == null) throw new IOException("无法读取 " + entry.displayName);
+            return input.read() != -1;
+        } catch (RuntimeException failure) {
+            throw new IOException("无法读取 " + entry.displayName, failure);
+        }
+    }
+
     static byte[] read(ContentResolver resolver, Entry entry, int limit) throws IOException {
         checkCancelled();
         if (entry instanceof Directory || limit < 0) {
