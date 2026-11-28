@@ -315,7 +315,7 @@ final class TvdbClient implements MovieMetadataSource {
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(9_000);
             connection.setReadTimeout(15_000);
-            connection.setRequestProperty("User-Agent", "NFOForAndroid/1.15.0");
+            connection.setRequestProperty("User-Agent", "NFOForAndroid/1.16.0");
             if (api && !token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
             if (api && payload != null) {
                 byte[] body = payload.getBytes(StandardCharsets.UTF_8);

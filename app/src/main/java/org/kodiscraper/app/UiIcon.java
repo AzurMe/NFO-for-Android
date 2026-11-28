@@ -8,7 +8,7 @@ import android.graphics.PixelFormat;
 import android.graphics.drawable.Drawable;
 
 final class UiIcon extends Drawable {
-    enum Kind { MENU, CLOSE, LIBRARY, FILM, SUBTITLES, RECOMMEND, LOG, APPEARANCE }
+    enum Kind { MENU, CLOSE, LIBRARY, FILM, SUBTITLES, RECOMMEND, LOG, APPEARANCE, INFO }
 
     private final Paint ink = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path outline = new Path();
@@ -88,6 +88,11 @@ final class UiIcon extends Drawable {
                     canvas.drawLine(12, 3, 12, 5, ink);
                     canvas.restore();
                 }
+                break;
+            case INFO:
+                canvas.drawCircle(12, 12, 8.5f, ink);
+                canvas.drawLine(12, 11.5f, 12, 16, ink);
+                canvas.drawPoint(12, 8, ink);
                 break;
         }
         canvas.restoreToCount(restore);

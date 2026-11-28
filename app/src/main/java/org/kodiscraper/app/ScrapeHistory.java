@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 
 import org.json.JSONArray;
 import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -13,7 +14,12 @@ final class ScrapeHistory {
     private static final String KEY = "entries";
     private static final String CURRENT_COUNT = "current_count";
     private static final int LIMIT = 200;
-    private static final int MAX_ENTRY_LENGTH = 2000;
+
+    record Entry(String detail, String concise, String moviePath, String movieTitle, boolean startsTask) {
+        boolean isMovie() {
+            return !moviePath.isEmpty();
+        }
+    }
 
     private final SharedPreferences preferences;
 
@@ -25,14 +31,19 @@ final class ScrapeHistory {
         preferences = context.getSharedPreferences(namespace, Context.MODE_PRIVATE);
     }
 
-    List<String> newestFirst() {
-        List<String> entries = new ArrayList<>();
+    List<Entry> newestFirst() {
+        List<Entry> entries = new ArrayList<>();
         try {
             JSONArray saved = new JSONArray(preferences.getString(KEY, "[]"));
             for (int index = 0; index < Math.min(saved.length(), LIMIT); index++) {
-                Object entry = saved.opt(index);
-                if (entry instanceof String text) {
-                    entries.add(limitLength(text));
+                Object value = saved.opt(index);
+                if (value instanceof String text) {
+                    entries.add(new Entry(text, text, "", "", false));
+                } else if (value instanceof JSONObject object) {
+                    String detail = object.optString("detail", "");
+                    entries.add(new Entry(detail, object.optString("concise", detail),
+                            object.optString("moviePath", ""), object.optString("movieTitle", ""),
+                            object.optBoolean("startsTask")));
                 }
             }
         } catch (JSONException | ClassCastException invalidHistory) {
@@ -41,25 +52,49 @@ final class ScrapeHistory {
         return entries;
     }
 
-    List<String> currentTask() {
+    List<Entry> currentTask() {
         synchronized (preferences) {
-            List<String> entries = newestFirst();
+            List<Entry> entries = newestFirst();
             return entries.subList(0, currentCount(entries.size()));
         }
     }
 
-    List<String> append(String message, boolean startsTask) {
+    List<Entry> append(String message, boolean startsTask) {
+        return append(new Entry(message, message, "", "", startsTask));
+    }
+
+    List<Entry> appendMovie(String moviePath, String movieTitle, String concise, String detail) {
+        return append(new Entry(detail, concise, moviePath, movieTitle, false));
+    }
+
+    private List<Entry> append(Entry entry) {
         synchronized (preferences) {
-            List<String> entries = newestFirst();
-            int count = startsTask ? 1 : Math.min(LIMIT, currentCount(entries.size()) + 1);
+            List<Entry> entries = newestFirst();
+            int count = entry.startsTask() ? 1 : Math.min(LIMIT, currentCount(entries.size()) + 1);
             if (entries.size() == LIMIT) {
                 entries.remove(LIMIT - 1);
             }
-            entries.add(0, limitLength(message));
+            entries.add(0, entry);
+            JSONArray saved = new JSONArray();
+            for (Entry item : entries) saved.put(encode(item));
             // Finish the write before showing the entry so it survives immediate process termination.
-            preferences.edit().putString(KEY, new JSONArray(entries).toString())
-                    .putInt(CURRENT_COUNT, count).commit();
+            preferences.edit().putString(KEY, saved.toString()).putInt(CURRENT_COUNT, count).commit();
             return entries.subList(0, count);
+        }
+    }
+
+    private static Object encode(Entry entry) {
+        if (!entry.isMovie() && !entry.startsTask()) return entry.detail();
+        try {
+            JSONObject value = new JSONObject().put("detail", entry.detail());
+            if (entry.isMovie()) {
+                value.put("concise", entry.concise()).put("moviePath", entry.moviePath())
+                        .put("movieTitle", entry.movieTitle());
+            }
+            if (entry.startsTask()) value.put("startsTask", true);
+            return value;
+        } catch (JSONException invalid) {
+            throw new IllegalStateException("无法创建刮削记录", invalid);
         }
     }
 
@@ -69,16 +104,5 @@ final class ScrapeHistory {
         } catch (ClassCastException invalidCount) {
             return 0;
         }
-    }
-
-    private static String limitLength(String message) {
-        if (message.length() <= MAX_ENTRY_LENGTH) {
-            return message;
-        }
-        int end = MAX_ENTRY_LENGTH - 1;
-        if (Character.isHighSurrogate(message.charAt(end - 1))) {
-            end--;
-        }
-        return message.substring(0, end) + "…";
     }
 }

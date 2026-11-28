@@ -35,7 +35,7 @@ sed 's/<manifest xmlns:android=/<manifest package="org.kodiscraper.app" xmlns:an
 "$tools/aapt2" compile --dir "$project_dir/app/src/main/res" -o "$scratch/resources.zip"
 "$tools/aapt2" link -I "$platform" --manifest "$scratch/AndroidManifest.xml" \
     --java "$scratch/generated" --min-sdk-version 26 --target-sdk-version 35 \
-    --version-code 23 --version-name 1.15.0 -o "$scratch/staging.apk" "$scratch/resources.zip"
+    --version-code 24 --version-name 1.16.0 -o "$scratch/staging.apk" "$scratch/resources.zip"
 
 mapfile -d '' sources < <(find "$project_dir/app/src/main/java" "$scratch/generated" -name '*.java' -print0)
 "$javac" --release 17 -encoding UTF-8 -classpath "$platform" -d "$scratch/classes" "${sources[@]}"

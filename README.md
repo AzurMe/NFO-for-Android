@@ -36,7 +36,7 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 使用 TMDB 时，同一凭据可同时处理最多 3 部待刮削影片。应用进程给 TMDB API 请求统一限速为约每秒 8 次，遇到 HTTP 429 会退避。TMDB 官方的限流会变化。TheTVDB 批量刮削按顺序执行。[TMDB 限流说明](https://developer.themoviedb.org/docs/rate-limiting)
 
-**刮削记录**显示本次任务的进展，开始新任务时会清空这一栏。点旁边的 **历史日志** 可查看保存在设备上的最近 200 条记录，重启应用后仍可查看。
+**刮削记录**和**字幕下载记录**显示本次任务的摘要。每部影片的结果集中放在片名下方，长行自动换行。开始新任务时清空当前记录，**历史日志**仍可查看设备上保留的最近 200 条详细记录。
 
 ### 连接检测
 
@@ -77,7 +77,7 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 
 ## 文件整理与重命名
 
-电影刚下载好即可在首页点 **整理**，也可从 **电影搜索路径** 区打开 **整理与重命名**。应用从本地文件夹或视频名称识别片名和年份，资料不足时可读现有 NFO 辅助判断。弹窗逐部列出电影文件夹和主视频的原名称、新名称，点 **确认重命名** 后才执行。以 `Dune.Part.One.2021.2160p.WEB-DL.HDR.HEVC` 为例，文件夹和主视频会统一为 `Dune.Part.One.2021`，视频保留原 `.mp4` 或 `.mkv` 扩展名。
+电影刚下载好即可在首页点 **整理**，也可点刮削器底部的 **整理与重命名**。应用从本地文件夹或视频名称识别片名和年份，资料不足时可读现有 NFO 辅助判断。弹窗逐部列出电影文件夹和主视频的原名称、新名称，点 **确认重命名** 后才执行。以 `Dune.Part.One.2021.2160p.WEB-DL.HDR.HEVC` 为例，文件夹和主视频会统一为 `Dune.Part.One.2021`，视频保留原 `.mp4` 或 `.mkv` 扩展名。
 
 整理会保留文件内容，并随视频改名同步其可识别的 Kodi 旁置文件和字幕。片名或年份无法确定、多个主视频、分段影片和同名冲突都会列入跳过项。已经加入 Kodi 资料库的影片改名后，可以更新资料库使其读取新路径。
 
@@ -122,6 +122,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.16.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.16.0)
+
+- 简化刮削和字幕记录。每部影片的结果按片名分组、缩进并自动换行。
+- 刮削器底部等宽显示「整理与重命名」和「一键刮削」，「关于」移入侧边栏。
+- 调大正文、控件和日志字号，采用蓝色场记板作为启动图标。
 
 ### [v1.15.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.15.0)
 

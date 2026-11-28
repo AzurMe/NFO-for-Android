@@ -164,19 +164,21 @@ final class MovieOrganizer {
         return new Item(folder, video, targetStem, targetVideoName, moves);
     }
 
-    static Summary apply(MovieStorage storage, Plan plan, Consumer<String> report) throws IOException {
+    record Progress(Item item, String summary, String detail) {}
+
+    static Summary apply(MovieStorage storage, Plan plan, Consumer<Progress> report) throws IOException {
         int renamed = 0;
         int failed = 0;
         for (Item item : plan.items()) {
             ScrapeEngine.checkCancelled();
             try {
-                applyItem(storage, item, report);
+                applyItem(storage, item, detail -> report.accept(new Progress(item, "", detail)));
                 renamed++;
-                report.accept("已整理 · " + item.sourceVideo() + " → " + item.targetVideo());
+                report.accept(new Progress(item, "已整理", item.sourceVideo() + " → " + item.targetVideo()));
             } catch (IOException problem) {
                 ScrapeEngine.checkCancelled();
                 failed++;
-                report.accept("整理失败 · " + item.sourceVideo() + " · " + message(problem));
+                report.accept(new Progress(item, "整理失败", "整理失败 · " + message(problem)));
             }
         }
         return new Summary(renamed, failed);
