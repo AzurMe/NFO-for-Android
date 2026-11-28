@@ -207,6 +207,10 @@ public final class MovieStorage {
     }
 
     public List<Movie> scan(boolean preferFolderTitle) throws IOException {
+        return scan(preferFolderTitle, false);
+    }
+
+    List<Movie> scan(boolean preferFolderTitle, boolean groupRootParts) throws IOException {
         List<Movie> movies = new ArrayList<>();
         ArrayDeque<Directory> pending = new ArrayDeque<>();
         Set<String> visited = new HashSet<>();
@@ -241,7 +245,7 @@ public final class MovieStorage {
                     }
                 }
             }
-            List<VideoCandidate> titles = groupStackedParts(directory, videos);
+            List<VideoCandidate> titles = groupStackedParts(videos, groupRootParts || directory.parent != null);
             boolean singleMovie = titles.size() == 1;
             FileNameHints folderHints = singleMovie && !directory.displayName.isEmpty()
                     ? parseFolderTitle(directory.displayName) : null;
@@ -292,10 +296,10 @@ public final class MovieStorage {
         }
     }
 
-    private static List<VideoCandidate> groupStackedParts(Directory directory, Map<String, Entry> videos) {
+    private static List<VideoCandidate> groupStackedParts(Map<String, Entry> videos, boolean groupParts) {
         Map<String, Map<String, Entry>> stacks = new LinkedHashMap<>();
         Map<String, String> names = new LinkedHashMap<>();
-        if (!directory.relativePath.isEmpty()) {
+        if (groupParts) {
             for (Entry video : videos.values()) {
                 String basename = stem(video.displayName);
                 for (Pattern stackPart : STACK_PART) {
@@ -401,6 +405,73 @@ public final class MovieStorage {
         Entry created = create(directory, name, Document.MIME_TYPE_DIR);
         directory.remember(created);
         return (Directory) created;
+    }
+
+    synchronized Directory createNewDirectory(Directory parent, String name) throws IOException {
+        validateName(name);
+        load(parent);
+        if (parent.lookup(name) != null) throw new IOException("目标已存在 · " + name);
+        Directory created = (Directory) create(parent, name, Document.MIME_TYPE_DIR);
+        parent.remember(created);
+        return created;
+    }
+
+    synchronized Entry moveFile(Directory source, Entry expected, Directory destination, boolean cancellable)
+            throws IOException {
+        Map<String, Entry> from = queryChildren(source, cancellable);
+        Entry current = from.get(expected.displayName);
+        if (current == null || current instanceof Directory || !current.documentId.equals(expected.documentId)) {
+            throw new IOException("源文件已变化 · " + expected.displayName);
+        }
+        Map<String, Entry> to = queryChildren(destination, cancellable);
+        if (to.keySet().stream().anyMatch(name -> name.equalsIgnoreCase(current.displayName))) {
+            throw new IOException("目标已存在 · " + current.displayName);
+        }
+        Entry moved = moveDocument(source, current, destination);
+        from.remove(current.displayName);
+        to.put(moved.displayName, moved);
+        source.replaceChildren(from);
+        destination.replaceChildren(to);
+        return moved;
+    }
+
+    private Entry moveDocument(Directory source, Entry file, Directory destination) throws IOException {
+        IOException failure = new IOException("存储位置无法移动文件 · " + file.displayName);
+        try {
+            Uri moved = DocumentsContract.moveDocument(resolver, file.uri, source.uri, destination.uri);
+            if (moved != null) {
+                // Providers may return a bare document URI. Use the original tree grant to inspect it.
+                Uri granted = DocumentsContract.buildDocumentUriUsingTree(treeUri, DocumentsContract.getDocumentId(moved));
+                Entry entry = stat(destination, granted);
+                if (!(entry instanceof Directory)) return entry;
+            }
+        } catch (IOException | RuntimeException cause) {
+            failure.initCause(cause);
+        }
+        try {
+            // Some providers report a failure after the file has already moved.
+            if (!queryChildren(source, false).containsKey(file.displayName)) {
+                Entry moved = queryChildren(destination, false).get(file.displayName);
+                if (moved != null && !(moved instanceof Directory)) return moved;
+            }
+        } catch (IOException inspection) {
+            failure.addSuppressed(inspection);
+        }
+        throw failure;
+    }
+
+    synchronized void removeEmptyDirectory(Directory directory) throws IOException {
+        Directory parent = directory.parent;
+        Map<String, Entry> entries = queryChildren(parent, false);
+        Entry current = entries.get(directory.displayName);
+        if (current == null) return;
+        if (!(current instanceof Directory) || !current.documentId.equals(directory.documentId)
+                || !queryChildren(directory, false).isEmpty()) {
+            throw new IOException("无法清理新文件夹 · " + directory.relativePath);
+        }
+        remove(directory);
+        entries.remove(directory.displayName);
+        parent.replaceChildren(entries);
     }
 
     public byte[] read(Entry entry, int limit) throws IOException {

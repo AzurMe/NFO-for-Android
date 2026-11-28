@@ -72,8 +72,12 @@ final class MovieOrganizer {
             return folder.relativePath;
         }
 
+        boolean createsFolder() {
+            return folder.parent == null;
+        }
+
         String targetFolder() {
-            return childPath(folder.parent.relativePath, targetStem);
+            return createsFolder() ? targetStem : childPath(folder.parent.relativePath, targetStem);
         }
 
         String sourceVideo() {
@@ -98,7 +102,7 @@ final class MovieOrganizer {
     static Plan preview(MovieStorage storage, boolean preferFolderTitle) throws IOException {
         Map<String, List<MovieStorage.Movie>> byFolder = new LinkedHashMap<>();
         Set<String> ancestors = new HashSet<>();
-        for (MovieStorage.Movie movie : storage.scan(preferFolderTitle)) {
+        for (MovieStorage.Movie movie : storage.scan(preferFolderTitle, true)) {
             byFolder.computeIfAbsent(movie.directory.documentId, ignored -> new ArrayList<>()).add(movie);
             for (MovieStorage.Directory parent = movie.directory.parent; parent != null; parent = parent.parent) {
                 ancestors.add(parent.documentId);
@@ -113,8 +117,16 @@ final class MovieOrganizer {
             MovieStorage.Movie movie = group.get(0);
             MovieStorage.Directory folder = movie.directory;
             if (folder.parent == null) {
+                List<MovieStorage.Entry> children = storage.list(folder);
                 for (MovieStorage.Movie loose : group) {
-                    skipped.add(new Skip(loose.relativePath, "影片直接位于设置的搜索目录"));
+                    try {
+                        Item item = prepareLoose(storage, loose, children);
+                        proposals.add(item);
+                        targets.merge(lower(item.targetFolder()), 1, Integer::sum);
+                    } catch (IOException problem) {
+                        ScrapeEngine.checkCancelled();
+                        skipped.add(new Skip(loose.relativePath, message(problem)));
+                    }
                 }
                 continue;
             }
@@ -135,7 +147,8 @@ final class MovieOrganizer {
         List<Item> items = new ArrayList<>();
         for (Item item : proposals) {
             if (targets.get(lower(item.targetFolder())) > 1) {
-                skipped.add(new Skip(item.sourceFolder(), "多个目录将使用同一目标名称 · " + item.targetFolder()));
+                skipped.add(new Skip(item.createsFolder() ? item.sourceVideo() : item.sourceFolder(),
+                        "多个目录将使用同一目标名称 · " + item.targetFolder()));
             } else {
                 items.add(item);
             }
@@ -164,6 +177,60 @@ final class MovieOrganizer {
         return new Item(folder, video, targetStem, targetVideoName, moves);
     }
 
+    private static Item prepareLoose(MovieStorage storage, MovieStorage.Movie movie,
+                                     List<MovieStorage.Entry> children) throws IOException {
+        MovieStorage.Entry video = named(children, movie.displayName);
+        if (video == null || !movie.uri.equals(video.uri) || !movie.basename().equals(stem(video.displayName))) {
+            throw new IOException("分段影片或目录内容已变化");
+        }
+        String videoExt = lower(video.displayName);
+        if (!(videoExt.endsWith(".mp4") || videoExt.endsWith(".mkv"))) {
+            throw new IOException("仅整理 MP4 或 MKV 影片");
+        }
+        TitleYear hints = titleYear(storage, movie);
+        if (!hints.usable()) throw new IOException("无法确认片名或上映年份");
+        String targetStem = dotTitle(hints.title) + "." + hints.year;
+        String targetVideo = targetStem + video.displayName.substring(stem(video.displayName).length());
+        ensureTarget(storage, movie.directory, null, targetStem);
+        return new Item(movie.directory, video, targetStem, targetVideo,
+                looseMoves(movie.directory, video, children, targetStem, targetVideo));
+    }
+
+    private static List<Move> looseMoves(MovieStorage.Directory root, MovieStorage.Entry video,
+                                        List<MovieStorage.Entry> children, String targetStem, String targetVideo)
+            throws IOException {
+        List<String> videoStems = new ArrayList<>();
+        String videoStem = stem(video.displayName);
+        for (MovieStorage.Entry child : children) {
+            if (!(child instanceof MovieStorage.Directory) && !sameEntry(child, video)
+                    && MovieStorage.isFeatureVideo(child.displayName)) {
+                String other = stem(child.displayName);
+                if (other.equalsIgnoreCase(videoStem)) throw new IOException("根目录中有多个同名影片文件");
+                if (other.length() > videoStem.length()) videoStems.add(other);
+            }
+        }
+        List<Move> moves = new ArrayList<>();
+        Set<String> targets = new HashSet<>();
+        targets.add(lower(targetVideo));
+        for (MovieStorage.Entry child : children) {
+            ScrapeEngine.checkCancelled();
+            if (child instanceof MovieStorage.Directory) continue;
+            String suffix = suffix(child.displayName, videoStem);
+            if (!isSidecar(suffix, child.displayName)) continue;
+            boolean belongsToOther = videoStems.stream().anyMatch(other ->
+                    isSidecar(suffix(child.displayName, other), child.displayName));
+            if (belongsToOther) continue;
+            String target = targetStem + suffix;
+            ensureNameLength(target);
+            if (!targets.add(lower(target))) throw new IOException("附属文件目标名称冲突 · " + target);
+            moves.add(new Move(root, child, target));
+        }
+        moves.sort(Comparator.comparing(move -> move.from.displayName));
+        ensureNameLength(targetVideo);
+        moves.add(new Move(root, video, targetVideo));
+        return moves;
+    }
+
     record Progress(Item item, String summary, String detail) {}
 
     static Summary apply(MovieStorage storage, Plan plan, Consumer<Progress> report) throws IOException {
@@ -172,7 +239,9 @@ final class MovieOrganizer {
         for (Item item : plan.items()) {
             ScrapeEngine.checkCancelled();
             try {
-                applyItem(storage, item, detail -> report.accept(new Progress(item, "", detail)));
+                Consumer<String> details = detail -> report.accept(new Progress(item, "", detail));
+                if (item.createsFolder()) applyLoose(storage, item, details);
+                else applyItem(storage, item, details);
                 renamed++;
                 report.accept(new Progress(item, "已整理", item.sourceVideo() + " → " + item.targetVideo()));
             } catch (IOException problem) {
@@ -182,6 +251,53 @@ final class MovieOrganizer {
             }
         }
         return new Summary(renamed, failed);
+    }
+
+    private static void applyLoose(MovieStorage storage, Item item, Consumer<String> report) throws IOException {
+        MovieStorage.Directory root = item.folder;
+        List<MovieStorage.Entry> children = storage.list(root);
+        MovieStorage.Entry video = named(children, item.video.displayName);
+        if (!sameEntry(video, item.video)
+                || !sameMoves(item.moves, looseMoves(root, video, children, item.targetStem, item.targetVideoName))) {
+            throw new IOException("影片或附属文件已变化，请重新预览");
+        }
+        MovieStorage.Directory destination = storage.createNewDirectory(root, item.targetStem);
+        List<CompletedMove> completed = new ArrayList<>();
+        try {
+            for (Move move : item.moves) {
+                MovieStorage.Entry moved = storage.moveFile(root, move.from, destination, true);
+                int index = completed.size();
+                completed.add(new CompletedMove(move, moved));
+                if (!move.to.equals(moved.displayName)) {
+                    MovieStorage.Entry renamed = storage.renameEntry(destination, moved, move.to, true);
+                    completed.set(index, new CompletedMove(move, renamed));
+                }
+            }
+        } catch (IOException failure) {
+            List<String> notRestored = new ArrayList<>();
+            for (int i = completed.size() - 1; i >= 0; i--) {
+                CompletedMove saved = completed.get(i);
+                try {
+                    MovieStorage.Entry originalName = storage.renameEntry(destination, saved.moved,
+                            saved.original.from.displayName, false);
+                    storage.moveFile(destination, originalName, root, false);
+                } catch (IOException restoreError) {
+                    notRestored.add(saved.original.from.displayName);
+                }
+            }
+            try {
+                storage.removeEmptyDirectory(destination);
+            } catch (IOException cleanupError) {
+                failure.addSuppressed(cleanupError);
+            }
+            if (!notRestored.isEmpty() || failure.getSuppressed().length > 0) {
+                String detail = "请检查新文件夹 · " + destination.relativePath;
+                if (!notRestored.isEmpty()) detail += " · 未能移回 " + String.join("、", notRestored);
+                if (Thread.currentThread().isInterrupted()) report.accept(detail);
+                throw new IOException(message(failure) + " · " + detail, failure);
+            }
+            throw failure;
+        }
     }
 
     private static void applyItem(MovieStorage storage, Item item, Consumer<String> report) throws IOException {
@@ -290,12 +406,16 @@ final class MovieOrganizer {
 
     private static void ensureTarget(MovieStorage storage, MovieStorage.Directory folder, MovieStorage.Entry source,
                                      String name) throws IOException {
-        if (name.getBytes(StandardCharsets.UTF_8).length > MAX_NAME_BYTES) {
-            throw new IOException("目标名称过长 · " + name);
-        }
+        ensureNameLength(name);
         MovieStorage.Entry target = storage.find(folder, name);
         if (target != null && !sameEntry(source, target)) {
             throw new IOException("目标已存在 · " + childPath(folder.relativePath, name));
+        }
+    }
+
+    private static void ensureNameLength(String name) throws IOException {
+        if (name.getBytes(StandardCharsets.UTF_8).length > MAX_NAME_BYTES) {
+            throw new IOException("目标名称过长 · " + name);
         }
     }
 

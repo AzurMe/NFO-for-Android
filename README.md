@@ -81,6 +81,8 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 
 整理会保留文件内容，并随视频改名同步其可识别的 Kodi 旁置文件和字幕。片名或年份无法确定、多个主视频、分段影片和同名冲突都会列入跳过项。已经加入 Kodi 资料库的影片改名后，可以更新资料库使其读取新路径。
 
+直接放在电影搜索根目录的 MP4 或 MKV 也会列入预览。确认后，应用新建「片名.年份」文件夹，把影片及可匹配的同名旁置文件一起移进去。例如 `Movies/Dune.Part.One.2021.2160p.mkv` 会变成 `Movies/Dune.Part.One.2021/Dune.Part.One.2021.mkv`。已有同名目标时会跳过。
+
 ## 文件命名和输出
 
 一部电影一个文件夹时，应用默认优先用文件夹名匹配。例如 `The.Odyssey.2026` 会解析为 **The Odyssey (2026)**，`Dune.Part.One.2021` 会解析为 **Dune Part One (2021)**，并可匹配 TMDB 中的 **Dune (2021)**。散放在根目录的电影按视频文件名匹配。
@@ -122,6 +124,10 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.17.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.17.0)
+
+- 整理根目录中散放的电影时，预览并确认新建标准命名文件夹，再移动影片和可识别的同名旁置资料。
 
 ### [v1.16.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.16.0)
 

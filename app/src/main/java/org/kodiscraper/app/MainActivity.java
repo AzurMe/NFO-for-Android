@@ -179,7 +179,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.16.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.17.0 android_api=" + Build.VERSION.SDK_INT);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
@@ -344,7 +344,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.16.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.17.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -1131,10 +1131,16 @@ public final class MainActivity extends Activity {
             if (separator >= 0) {
                 paths.append("所在目录 · ").append(sourceFolder, 0, separator).append('\n');
             }
-            paths.append("电影文件夹\n原名称 · ").append(pathName(sourceFolder))
-                    .append("\n新名称 · ").append(pathName(item.targetFolder()))
-                    .append("\n电影文件\n原名称 · ").append(pathName(item.sourceVideo()))
-                    .append("\n新名称 · ").append(pathName(item.targetVideo())).append("\n\n");
+            if (item.createsFolder()) {
+                paths.append("根目录 · ").append(item.sourceVideo())
+                        .append("\n新建文件夹 · ").append(item.targetFolder())
+                        .append("\n移动至 · ").append(item.targetVideo()).append("\n\n");
+            } else {
+                paths.append("电影文件夹\n原名称 · ").append(pathName(sourceFolder))
+                        .append("\n新名称 · ").append(pathName(item.targetFolder()))
+                        .append("\n电影文件\n原名称 · ").append(pathName(item.sourceVideo()))
+                        .append("\n新名称 · ").append(pathName(item.targetVideo())).append("\n\n");
+            }
         }
         for (MovieOrganizer.Skip skip : plan.skipped()) {
             paths.append("跳过 · ").append(skip.path()).append("\n").append(skip.reason()).append("\n\n");
@@ -2229,7 +2235,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.16.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.17.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
