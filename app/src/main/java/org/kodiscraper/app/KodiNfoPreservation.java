@@ -188,7 +188,7 @@ final class KodiNfoPreservation {
         }
     }
 
-    private static List<Element> children(Element parent) {
+    static List<Element> children(Element parent) {
         List<Element> result = new ArrayList<>();
         for (Node child = parent.getFirstChild(); child != null; child = child.getNextSibling()) {
             if (child.getNodeType() == Node.ELEMENT_NODE) {
@@ -281,6 +281,10 @@ final class KodiNfoPreservation {
             }
         }
         return true;
+    }
+
+    static Element readMovie(byte[] nfo) throws IOException {
+        return parseMovie(combinationXml(decode(nfo))).getDocumentElement();
     }
 
     private static Document parseMovie(String xml) throws IOException {

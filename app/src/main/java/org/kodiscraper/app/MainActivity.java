@@ -170,7 +170,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.11.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.12.0 android_api=" + Build.VERSION.SDK_INT);
         history = new ScrapeHistory(this);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
@@ -334,7 +334,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.11.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.12.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -529,7 +529,7 @@ public final class MainActivity extends Activity {
             return;
         }
         if (destination == Page.PUSH && moviePush == null) {
-            moviePush = new MoviePushScreen(this, this::moviePushClient, this::configureTmdbFromMoviePush);
+            moviePush = new MoviePushScreen(this);
             moviePushPage = moviePush.view();
             pageHost.addView(moviePushPage, viewport());
             if (retainedMoviePush != null) {
@@ -554,16 +554,6 @@ public final class MainActivity extends Activity {
         if (page == Page.PUSH) {
             moviePush.onShown();
         }
-    }
-
-    private TmdbClient moviePushClient() {
-        String value = credential == null ? savedCredential : credential.getText().toString().trim();
-        return value.isEmpty() ? null : new TmdbClient(value, language());
-    }
-
-    private void configureTmdbFromMoviePush() {
-        showPage(Page.SCRAPER);
-        focusTmdbCredential();
     }
 
     private void showScraperDialog(Runnable dialog) {
@@ -1816,6 +1806,12 @@ public final class MainActivity extends Activity {
         }
     }
 
+    @Override
+    protected void onStop() {
+        if (posterWall != null) posterWall.stopTrailer();
+        super.onStop();
+    }
+
     private interface Task {
         Runnable run() throws IOException;
     }
@@ -2028,7 +2024,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.11.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.12.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);

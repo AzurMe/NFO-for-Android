@@ -1,250 +1,220 @@
 package org.kodiscraper.app;
 
-import android.content.Context;
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.time.DateTimeException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.zip.GZIPInputStream;
 
 final class ImdbMovieFeed {
-    private static final String RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz";
-    private static final String HEADER = "tconst\taverageRating\tnumVotes";
+    private static final String HOST = "www.imdb.com";
+    static final String IMAGE_HOST = "m.media-amazon.com";
+    static final String IMDB_IMAGE_HOST = "ia.media-imdb.com";
     private static final Pattern IMDB_ID = Pattern.compile("tt[0-9]{5,12}");
-    private static final int MAX_COMPRESSED_BYTES = 16 * 1024 * 1024;
-    private static final int MAX_EXPANDED_BYTES = 96 * 1024 * 1024;
-    private static final int MAX_ROW_BYTES = 128;
-    private static final int BUFFER_BYTES = 64 * 1024;
-    private static final long MAX_CACHE_AGE_MILLIS = 24 * 60 * 60 * 1000L;
-    private static final Object CACHE_LOCK = new Object();
+    private static final Pattern SEARCH_DATA = Pattern.compile(
+            "(?is)<script\\b(?=[^>]*\\bid\\s*=\\s*['\"]__NEXT_DATA__['\"])[^>]*>(.*?)</script\\s*>");
+    private static final Pattern LINKED_DATA = Pattern.compile(
+            "(?is)<script\\b(?=[^>]*\\btype\\s*=\\s*['\"]application/ld\\+json['\"])[^>]*>(.*?)</script\\s*>");
+    private static final int MAX_PAGE_BYTES = 6 * 1024 * 1024;
+    private static final int MAX_MOVIES = 50;
+    static final double HIGH_RATING = 7.0;
 
-    private final File cache;
-    private volatile HttpURLConnection activeDownload;
-
-    ImdbMovieFeed(Context context) {
-        cache = new File(context.getCacheDir(), "imdb-title-ratings.tsv.gz");
-    }
-
-    record Movie(String title, String originalTitle, String imdbId, LocalDate releaseDate,
-                 double rating, int votes, String posterPath, String overview, List<String> genres) {
-        Movie(String title, String originalTitle, String imdbId, LocalDate releaseDate, double rating, int votes) {
-            this(title, originalTitle, imdbId, releaseDate, rating, votes, "", "", Collections.emptyList());
-        }
-
-        Movie {
-            genres = genres == null ? Collections.emptyList()
-                    : Collections.unmodifiableList(new ArrayList<>(genres));
+    record Movie(String title, String originalTitle, String imdbId, LocalDate releaseDate, int year,
+                 double rating, int votes, String posterUrl, String overview, List<String> genres) {
+        String releaseLabel() {
+            if (releaseDate != null) return releaseDate.toString();
+            return year > 0 ? Integer.toString(year) : "";
         }
     }
 
-    private record Rating(double value, int votes) {}
-
-    List<Movie> load(TmdbClient tmdb, LocalDate today) throws IOException {
-        ScrapeEngine.checkCancelled();
+    List<Movie> load(LocalDate today) throws IOException {
         LocalDate from = today.minusDays(29);
-        List<TmdbClient.RecentMovie> recent = tmdb.recentMovies(from, today);
-        Map<String, TmdbClient.RecentMovie> identified = new LinkedHashMap<>();
-        for (TmdbClient.RecentMovie movie : recent) {
-            LocalDate released = movie.releaseDate();
-            String id = normalizedId(movie.imdbId());
-            if (!id.isEmpty() && released != null && !released.isBefore(from) && !released.isAfter(today)) {
-                identified.putIfAbsent(id, movie);
-            }
-        }
-        if (identified.isEmpty()) return Collections.emptyList();
-        Map<String, Rating> ratings = ratings(identified.keySet());
-        List<Movie> movies = new ArrayList<>();
-        for (Map.Entry<String, TmdbClient.RecentMovie> item : identified.entrySet()) {
-            Rating rating = ratings.get(item.getKey());
-            if (rating == null) continue;
-            TmdbClient.RecentMovie movie = item.getValue();
-            String title = cleanTitle(movie.title());
-            String originalTitle = cleanTitle(movie.originalTitle());
-            if (title.isEmpty()) title = originalTitle;
-            if (!title.isEmpty()) {
-                movies.add(new Movie(title, originalTitle, item.getKey(), movie.releaseDate(),
-                        rating.value(), rating.votes(), cleanTitle(movie.posterPath()),
-                        cleanTitle(movie.overview()), movie.genres()));
-            }
-        }
-        return movies;
-    }
-
-    void cancel() {
-        HttpURLConnection connection = activeDownload;
-        if (connection != null) connection.disconnect();
-    }
-
-    private Map<String, Rating> ratings(Set<String> wanted) throws IOException {
-        synchronized (CACHE_LOCK) {
+        String search = "https://" + HOST + "/search/title/?title_type=feature&release_date="
+                + from + "," + today + "&count=" + MAX_MOVIES;
+        List<Movie> popular = fetch(search + "&sort=num_votes,desc", from, today);
+        Map<String, Movie> movies = new LinkedHashMap<>();
+        for (Movie movie : popular) movies.put(movie.imdbId(), movie);
+        try {
+            List<Movie> rated = fetch(search + "&user_rating=" + HIGH_RATING + ",10&num_votes=10,&sort=user_rating,desc",
+                    from, today);
+            for (Movie movie : rated) movies.putIfAbsent(movie.imdbId(), movie);
+        } catch (IOException failure) {
             ScrapeEngine.checkCancelled();
-            long age = System.currentTimeMillis() - cache.lastModified();
-            if (cache.isFile() && age >= 0 && age < MAX_CACHE_AGE_MILLIS) {
-                try {
-                    return readRatings(cache, wanted);
-                } catch (IOException invalidCache) {
-                    ScrapeEngine.checkCancelled();
-                    // A fresh but unreadable cache can be recovered from the official dataset.
-                }
-            }
+            if (movies.isEmpty()) throw failure;
+            DebugLog.failure("imdb-high-rated", failure);
+        }
+        return new ArrayList<>(movies.values());
+    }
 
-            File download = new File(cache.getParentFile(), "imdb-title-ratings.download");
+    private static List<Movie> fetch(String address, LocalDate from, LocalDate today) throws IOException {
+        String html;
+        try {
+            byte[] page = SubtitleHttp.get(address, "Accept-Language", "en-US,en", MAX_PAGE_BYTES, HOST);
+            html = new String(page, StandardCharsets.UTF_8);
+        } catch (SubtitleHttp.HttpException failure) {
+            throw new IOException("IMDb 搜索页返回 HTTP " + failure.statusCode);
+        } catch (IOException failure) {
+            ScrapeEngine.checkCancelled();
+            throw new IOException("无法连接 IMDb 搜索页，请检查网络后重试。", failure);
+        }
+        return parse(html, from, today);
+    }
+
+    static List<Movie> parse(String html, LocalDate from, LocalDate through) throws IOException {
+        Map<String, Movie> results = new LinkedHashMap<>();
+        Matcher scripts = SEARCH_DATA.matcher(html);
+        boolean recognized = false;
+        if (scripts.find()) {
             try {
-                downloadRatings(download);
-                Map<String, Rating> matches = readRatings(download, wanted);
-                ScrapeEngine.checkCancelled();
-                // Both files are in the private cache directory. A failed replacement leaves the
-                // previous file in place, and the current verified ratings remain available.
-                download.renameTo(cache);
-                return matches;
-            } finally {
-                if (download.exists()) download.delete();
-            }
-        }
-    }
-
-    private void downloadRatings(File destination) throws IOException {
-        HttpURLConnection connection = (HttpURLConnection) URI.create(RATINGS_URL).toURL().openConnection();
-        try {
-            activeDownload = connection;
-            ScrapeEngine.checkCancelled();
-            connection.setConnectTimeout(12_000);
-            connection.setReadTimeout(20_000);
-            connection.setInstanceFollowRedirects(false);
-            connection.setUseCaches(false);
-            connection.setRequestProperty("Accept-Encoding", "identity");
-            connection.setRequestProperty("User-Agent", "NFOForAndroid");
-            int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) {
-                throw new IOException("IMDb 评分下载失败（HTTP " + code + "）");
-            }
-            if (connection.getContentLengthLong() > MAX_COMPRESSED_BYTES) {
-                throw new IOException("IMDb 评分文件超出下载限制");
-            }
-            int total = 0;
-            byte[] buffer = new byte[BUFFER_BYTES];
-            try (InputStream input = connection.getInputStream();
-                 FileOutputStream output = new FileOutputStream(destination)) {
-                int count;
-                while ((count = input.read(buffer)) != -1) {
-                    ScrapeEngine.checkCancelled();
-                    if (count > MAX_COMPRESSED_BYTES - total) {
-                        throw new IOException("IMDb 评分文件超出下载限制");
-                    }
-                    total += count;
-                    output.write(buffer, 0, count);
-                }
-            }
-        } finally {
-            activeDownload = null;
-            connection.disconnect();
-        }
-    }
-
-    private static Map<String, Rating> readRatings(File dataset, Set<String> wanted) throws IOException {
-        if (dataset.length() <= 0 || dataset.length() > MAX_COMPRESSED_BYTES) {
-            throw new IOException("IMDb 评分文件大小无效");
-        }
-        long[] ids = new long[wanted.size()];
-        int index = 0;
-        for (String id : wanted) ids[index++] = Long.parseLong(id.substring(2));
-        Arrays.sort(ids);
-
-        Map<String, Rating> found = new HashMap<>();
-        byte[] buffer = new byte[BUFFER_BYTES];
-        byte[] row = new byte[MAX_ROW_BYTES];
-        int expanded = 0;
-        int length = 0;
-        int rows = 0;
-        try (InputStream raw = new BufferedInputStream(new FileInputStream(dataset), BUFFER_BYTES);
-             InputStream input = new GZIPInputStream(raw, BUFFER_BYTES)) {
-            int count;
-            while ((count = input.read(buffer)) != -1) {
-                ScrapeEngine.checkCancelled();
-                if (count > MAX_EXPANDED_BYTES - expanded) {
-                    throw new IOException("IMDb 评分文件超出解压限制");
-                }
-                expanded += count;
-                for (index = 0; index < count; index++) {
-                    byte character = buffer[index];
-                    if (character == '\n') {
-                        if (length > 0) {
-                            readRow(row, length, rows++ == 0, ids, wanted, found);
+                JSONObject data = new JSONObject(scripts.group(1));
+                JSONObject group = object(data, "props", "pageProps", "searchResults", "titleResults");
+                JSONArray items = group == null ? null : group.optJSONArray("titleListItems");
+                if (items != null) {
+                    recognized = true;
+                    for (int index = 0; index < items.length() && results.size() < MAX_MOVIES; index++) {
+                        ScrapeEngine.checkCancelled();
+                        JSONObject item = items.optJSONObject(index);
+                        if (item != null) {
+                            JSONObject node = item.optJSONObject("node");
+                            add(results, searchMovie(node == null ? item : node), from, through);
                         }
-                        length = 0;
-                    } else {
-                        if (length == row.length) throw new IOException("IMDb 评分文件记录过长");
-                        row[length++] = character;
                     }
+                }
+            } catch (JSONException invalid) {
+                DebugLog.failure("imdb-search", invalid);
+            }
+        }
+        if (results.isEmpty()) {
+            Matcher linked = LINKED_DATA.matcher(html);
+            while (linked.find() && results.size() < MAX_MOVIES) {
+                try {
+                    JSONObject data = new JSONObject(linked.group(1));
+                    JSONArray items = data.optJSONArray("itemListElement");
+                    if (!"ItemList".equals(data.optString("@type")) || items == null) continue;
+                    for (int index = 0; index < items.length() && results.size() < MAX_MOVIES; index++) {
+                        ScrapeEngine.checkCancelled();
+                        JSONObject movie = object(items.optJSONObject(index), "item");
+                        if (movie != null) add(results, linkedMovie(movie), from, through);
+                    }
+                    recognized |= items.length() == 0 || !results.isEmpty();
+                } catch (JSONException invalid) {
+                    DebugLog.failure("imdb-search", invalid);
                 }
             }
         }
-        if (length > 0) readRow(row, length, rows++ == 0, ids, wanted, found);
-        if (rows < 2) throw new IOException("IMDb 评分文件没有数据");
-        return found;
+        if (!recognized) throw new IOException("无法读取 IMDb 搜索结果，网页格式可能已更新。");
+        return new ArrayList<>(results.values());
     }
 
-    private static void readRow(byte[] row, int length, boolean header, long[] sought,
-                                Set<String> wanted, Map<String, Rating> found) throws IOException {
-        if (row[length - 1] == '\r') length--;
-        if (header) {
-            if (!HEADER.equals(new String(row, 0, length, StandardCharsets.US_ASCII))) {
-                throw new IOException("IMDb 评分文件标题格式无效");
+    private static Movie searchMovie(JSONObject node) {
+        JSONObject ratings = object(node, "ratingsSummary");
+        JSONObject release = object(node, "releaseDate");
+        JSONObject releaseYear = object(node, "releaseYear");
+        LocalDate date = null;
+        if (release != null) {
+            try {
+                date = LocalDate.of(release.optInt("year"), release.optInt("month"), release.optInt("day"));
+            } catch (DateTimeException incomplete) {
+                // IMDb can give the year alone. The date range is already applied by the search page.
             }
-            return;
         }
+        JSONObject genres = object(node, "titleGenres");
+        if (genres == null) genres = object(node, "genres");
+        int year = date != null ? date.getYear() : releaseYear == null ? 0 : releaseYear.optInt("year");
+        return new Movie(string(object(node, "titleText"), "text", 240),
+                string(object(node, "originalTitleText"), "text", 240), string(node, "id", 20), date,
+                year,
+                ratings == null ? 0 : ratings.optDouble("aggregateRating", 0),
+                ratings == null ? 0 : ratings.optInt("voteCount"),
+                posterUrl(string(object(node, "primaryImage"), "url", 1500)),
+                string(object(node, "plot", "plotText"), "plainText", 1800),
+                genres(genres == null ? null : genres.optJSONArray("genres")));
+    }
 
-        if (length < 8 || row[0] != 't' || row[1] != 't') return;
-        long number = 0;
-        int idEnd = 2;
-        for (; idEnd < length && row[idEnd] != '\t'; idEnd++) {
-            int digit = row[idEnd] - '0';
-            if (digit < 0 || digit > 9 || idEnd >= 14) return;
-            number = number * 10 + digit;
-        }
-        if (idEnd == length || Arrays.binarySearch(sought, number) < 0) return;
-        String id = new String(row, 0, idEnd, StandardCharsets.US_ASCII);
-        if (!wanted.contains(id)) return;
-
-        int ratingStart = idEnd + 1;
-        int ratingEnd = ratingStart;
-        while (ratingEnd < length && row[ratingEnd] != '\t') ratingEnd++;
-        if (ratingEnd == length) return;
+    private static Movie linkedMovie(JSONObject item) {
+        if (!"Movie".equals(item.optString("@type"))) return null;
+        Matcher id = IMDB_ID.matcher(item.optString("url"));
+        if (!id.find()) return null;
+        JSONObject rating = item.optJSONObject("aggregateRating");
+        LocalDate date = null;
         try {
-            double score = Double.parseDouble(new String(row, ratingStart, ratingEnd - ratingStart,
-                    StandardCharsets.US_ASCII));
-            int votes = Integer.parseInt(new String(row, ratingEnd + 1, length - ratingEnd - 1,
-                    StandardCharsets.US_ASCII));
-            if (score >= 1 && score <= 10 && votes > 0) found.put(id, new Rating(score, votes));
-        } catch (NumberFormatException invalidValue) {
-            // Keep the feed available for the remaining titles if a rating value is invalid.
+            date = LocalDate.parse(item.optString("datePublished"));
+        } catch (DateTimeException incomplete) {
+            // Structured data sometimes omits a release date.
         }
+        JSONObject image = item.optJSONObject("image");
+        return new Movie(string(item, "name", 240), string(item, "alternateName", 240), id.group(),
+                date, date == null ? 0 : date.getYear(), rating == null ? 0 : rating.optDouble("ratingValue", 0),
+                rating == null ? 0 : rating.optInt("ratingCount"),
+                posterUrl(image == null ? string(item, "image", 1500) : string(image, "url", 1500)),
+                string(item, "description", 1800), genres(item.optJSONArray("genre")));
     }
 
-    private static String normalizedId(String id) {
-        if (id == null) return "";
-        String value = id.trim().toLowerCase(Locale.ROOT);
-        return IMDB_ID.matcher(value).matches() ? value : "";
+    private static void add(Map<String, Movie> results, Movie movie, LocalDate from, LocalDate through) {
+        if (movie == null || !IMDB_ID.matcher(movie.imdbId()).matches() || movie.title().isEmpty()
+                || !(movie.rating() >= 1 && movie.rating() <= 10) || movie.votes() <= 0) return;
+        LocalDate date = movie.releaseDate();
+        if (date != null && (date.isBefore(from) || date.isAfter(through))) return;
+        int year = movie.year();
+        if (date == null && year > 0 && (year < from.getYear() || year > through.getYear())) return;
+        results.putIfAbsent(movie.imdbId(), movie);
     }
 
-    private static String cleanTitle(String value) {
-        return value == null ? "" : value.trim();
+    private static JSONObject object(JSONObject base, String... keys) {
+        for (String key : keys) {
+            if (base == null) return null;
+            base = base.optJSONObject(key);
+        }
+        return base;
+    }
+
+    private static String string(JSONObject object, String key, int limit) {
+        if (object == null) return "";
+        Object value = object.opt(key);
+        return value instanceof String ? clean((String) value, limit) : "";
+    }
+
+    private static String clean(String value, int limit) {
+        String text = value.trim();
+        return text.length() > limit ? text.substring(0, limit) : text;
+    }
+
+    private static List<String> genres(JSONArray values) {
+        if (values == null) return Collections.emptyList();
+        Set<String> genres = new LinkedHashSet<>();
+        for (int index = 0; index < values.length() && genres.size() < 8; index++) {
+            Object value = values.opt(index);
+            String genre = value instanceof String ? clean((String) value, 60)
+                    : string(object(values.optJSONObject(index), "genre"), "text", 60);
+            if (genre.isEmpty()) genre = string(values.optJSONObject(index), "text", 60);
+            if (!genre.isEmpty()) genres.add(genre);
+        }
+        return new ArrayList<>(genres);
+    }
+
+    static String posterUrl(String address) {
+        try {
+            URI uri = new URI(address);
+            if (!"https".equalsIgnoreCase(uri.getScheme()) || uri.getRawUserInfo() != null || uri.getPort() != -1
+                    || !(IMAGE_HOST.equalsIgnoreCase(uri.getHost()) || IMDB_IMAGE_HOST.equalsIgnoreCase(uri.getHost()))
+                    || uri.getPath() == null || !uri.getPath().startsWith("/images/")) return "";
+            return uri.toASCIIString().replaceFirst("(?i)\\._V1_\\.jpg$", "._V1_SX360_.jpg");
+        } catch (URISyntaxException invalid) {
+            return "";
+        }
     }
 }

@@ -404,6 +404,10 @@ public final class MovieStorage {
     }
 
     public byte[] read(Entry entry, int limit) throws IOException {
+        return read(resolver, entry, limit);
+    }
+
+    static byte[] read(ContentResolver resolver, Entry entry, int limit) throws IOException {
         checkCancelled();
         if (entry instanceof Directory || limit < 0) {
             throw new IOException("无法读取 " + entry.displayName);

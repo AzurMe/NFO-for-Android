@@ -24,7 +24,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 final class MoviePosterLoader implements AutoCloseable {
-    private static final String IMAGE_HOST = "image.tmdb.org";
     private static final int MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024;
     private static final int MAX_CACHE_BYTES = 8 * 1024 * 1024;
     private static final int MAX_SOURCE_EDGE = 4096;
@@ -61,8 +60,8 @@ final class MoviePosterLoader implements AutoCloseable {
     }
 
     // These methods manage ImageView bindings on the main thread.
-    void bind(ImageView view, String posterPath) {
-        bindUrl(view, TmdbClient.moviePosterUrl(posterPath));
+    void bindImdb(ImageView view, String posterUrl) {
+        bindUrl(view, ImdbMovieFeed.posterUrl(posterUrl));
     }
 
     void bindLocal(ImageView view, Uri image) {
@@ -158,7 +157,8 @@ final class MoviePosterLoader implements AutoCloseable {
         try {
             if (!closed) {
                 if (resolver == null) {
-                    byte[] bytes = SubtitleHttp.get(url, null, null, MAX_DOWNLOAD_BYTES, IMAGE_HOST);
+                    byte[] bytes = SubtitleHttp.get(url, null, null, MAX_DOWNLOAD_BYTES,
+                            ImdbMovieFeed.IMAGE_HOST, ImdbMovieFeed.IMDB_IMAGE_HOST);
                     bitmap = decode(bytes);
                 } else {
                     bitmap = decodeLocal(Uri.parse(url));

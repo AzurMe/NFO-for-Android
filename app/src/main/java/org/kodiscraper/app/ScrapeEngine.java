@@ -28,7 +28,7 @@ import java.util.function.Consumer;
 final class ScrapeEngine {
     static final int ACTOR_LIMIT = 20;
     static final int ALTERNATE_FANART_LIMIT = 3;
-    private static final int NFO_READ_LIMIT = 1024 * 1024;
+    static final int NFO_READ_LIMIT = 1024 * 1024;
     private static final int ARTWORK_REPAIR_READ_LIMIT = 16 * 1024 * 1024;
     private static final byte[] EMPTY_MOVIE_NFO = "<movie/>".getBytes(StandardCharsets.UTF_8);
     private static final String[] TYPES = {"poster", "fanart", "clearlogo", "landscape", "keyart"};
@@ -87,7 +87,8 @@ final class ScrapeEngine {
         return localArtwork(storage, movie, type) != null;
     }
 
-    record LibraryMovie(String title, int year, List<String> tags, Uri poster) {}
+    record LibraryMovie(String title, int year, List<String> tags, Uri poster, MovieStorage.Entry nfo,
+                        Uri localTrailer) {}
 
     static LibraryMovie libraryMovie(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
         try {
@@ -95,9 +96,12 @@ final class ScrapeEngine {
             if (!completeNfo(sidecars)) return null;
             MovieStorage.Entry poster = localArtwork(storage, movie, "poster");
             if (poster == null || localArtwork(storage, movie, "fanart") == null) return null;
-            Identifiers nfo = sidecars.get(0).ids;
+            NfoSidecar sidecar = sidecars.get(0);
+            Identifiers nfo = sidecar.ids;
+            MovieStorage.Entry trailer = movie.localTrailerPath == null ? null
+                    : storage.find(movie.directory, movie.localTrailerPath);
             return new LibraryMovie(nfo.title, nfo.year > 0 ? nfo.year : movie.year,
-                    new ArrayList<>(nfo.tags), poster.uri);
+                    new ArrayList<>(nfo.tags), poster.uri, sidecar.entry, trailer == null ? null : trailer.uri);
         } catch (IOException unreadable) {
             checkCancelled();
             DebugLog.failure("library-entry", unreadable);
@@ -626,7 +630,7 @@ final class ScrapeEngine {
             MovieStorage.Entry entry = storage.find(movie.directory, name);
             if (entry != null && !(entry instanceof MovieStorage.Directory)) {
                 byte[] contents = storage.read(entry, NFO_READ_LIMIT);
-                sidecars.add(new NfoSidecar(entry.displayName, contents, readIds(contents)));
+                sidecars.add(new NfoSidecar(entry, contents, readIds(contents)));
             }
         }
         return sidecars;
@@ -791,12 +795,14 @@ final class ScrapeEngine {
     }
 
     private static final class NfoSidecar {
+        final MovieStorage.Entry entry;
         final String name;
         final byte[] contents;
         final Identifiers ids;
 
-        NfoSidecar(String name, byte[] contents, Identifiers ids) {
-            this.name = name;
+        NfoSidecar(MovieStorage.Entry entry, byte[] contents, Identifiers ids) {
+            this.entry = entry;
+            this.name = entry.displayName;
             this.contents = contents;
             this.ids = ids;
         }

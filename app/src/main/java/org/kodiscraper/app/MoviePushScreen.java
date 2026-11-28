@@ -38,16 +38,12 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 final class MoviePushScreen {
-    private static final double HIGH_RATING = 7.0;
     private static final int[] RELEASE_HEIGHTS = {-1, 4320, 2160, 1440, 1080, 720, 576, 480, 0};
 
     private final MainActivity activity;
     private final AppAppearance appearance;
-    private final Supplier<TmdbClient> tmdbClient;
-    private final Runnable configureTmdb;
     private final LinearLayout root;
     private final LinearLayout entries;
     private final ScrollView movieList;
@@ -64,18 +60,13 @@ final class MoviePushScreen {
     private LocalDate loadedThrough;
     private boolean highRated;
     private boolean requested;
-    private boolean needsTmdb;
     private boolean loadingFeed;
     private Thread worker;
-    private TmdbClient activeTmdb;
-    private ImdbMovieFeed activeFeed;
     private AlertDialog releasesDialog;
 
-    MoviePushScreen(MainActivity activity, Supplier<TmdbClient> tmdbClient, Runnable configureTmdb) {
+    MoviePushScreen(MainActivity activity) {
         this.activity = activity;
         appearance = activity.appearance();
-        this.tmdbClient = tmdbClient;
-        this.configureTmdb = configureTmdb;
         root = activity.vertical();
         root.setBackgroundColor(appearance.background);
         refresh = activity.button("刷新", appearance.tint, appearance.foreground);
@@ -125,8 +116,7 @@ final class MoviePushScreen {
         entries.setPadding(0, dp(2), 0, dp(4));
         movieList.addView(entries, new ScrollView.LayoutParams(-1, -2));
         movieList.getViewTreeObserver().addOnGlobalLayoutListener(this::loadVisiblePosters);
-        TextView attribution = activity.text("影片资料与海报由 TMDB 提供。\nInformation courtesy of IMDb "
-                + "(https://www.imdb.com). Used with permission.", 11, appearance.muted, false);
+        TextView attribution = activity.text("影片资料、评分与海报来源于 IMDb", 11, appearance.muted, false);
         activity.add(content, attribution, 5);
     }
 
@@ -163,7 +153,7 @@ final class MoviePushScreen {
     }
 
     void onShown() {
-        if ((!requested || needsTmdb) && worker == null) {
+        if (!requested && worker == null) {
             refreshMovies();
         }
         movieList.post(this::loadVisiblePosters);
@@ -184,32 +174,18 @@ final class MoviePushScreen {
             renderMovies();
             status.setText("已取消刷新");
         } else if (worker == null) {
-            if (needsTmdb) {
-                requested = false;
-                configureTmdb.run();
-            } else {
-                refreshMovies();
-            }
+            refreshMovies();
         }
     }
 
     private void refreshMovies() {
-        TmdbClient tmdb = tmdbClient.get();
         requested = true;
-        needsTmdb = tmdb == null;
-        if (needsTmdb) {
-            refresh.setText("设置 TMDB");
-            status.setText("填写 TMDB 凭据后即可获取最近上映的影片。");
-            return;
-        }
         LocalDate today = LocalDate.now();
-        ImdbMovieFeed feed = new ImdbMovieFeed(activity.getApplicationContext());
-        activeTmdb = tmdb;
-        activeFeed = feed;
+        ImdbMovieFeed feed = new ImdbMovieFeed();
         posterLoader.resetFailures();
         setFeedLoading(true);
-        status.setText("正在查找近 30 天上映的影片和 IMDb 评分…");
-        launch(() -> feed.load(tmdb, today), result -> {
+        status.setText("正在从 IMDb 读取近 30 天上映的影片…");
+        launch(() -> feed.load(today), result -> {
             movies = result;
             loadedThrough = today;
             updateRange();
@@ -259,7 +235,7 @@ final class MoviePushScreen {
         Comparator<ImdbMovieFeed.Movie> rating = Comparator.comparingDouble(ImdbMovieFeed.Movie::rating).reversed();
         Comparator<ImdbMovieFeed.Movie> votes = Comparator.comparingInt(ImdbMovieFeed.Movie::votes).reversed();
         if (highRated) {
-            visible.removeIf(movie -> movie.rating() < HIGH_RATING);
+            visible.removeIf(movie -> movie.rating() < ImdbMovieFeed.HIGH_RATING);
             visible.sort(rating.thenComparing(votes));
         } else {
             visible.sort(votes.thenComparing(rating));
@@ -278,8 +254,8 @@ final class MoviePushScreen {
             summary.setGravity(Gravity.TOP);
             ImageView poster = moviePoster(movie);
             summary.addView(poster, new LinearLayout.LayoutParams(dp(72), dp(108)));
-            if (!movie.posterPath().isEmpty()) {
-                posters.add(new PosterBinding(poster, movie.posterPath()));
+            if (!movie.posterUrl().isEmpty()) {
+                posters.add(new PosterBinding(poster, movie.posterUrl()));
             }
             LinearLayout facts = activity.vertical();
             LinearLayout.LayoutParams factsSpace = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -302,7 +278,7 @@ final class MoviePushScreen {
             LinearLayout.LayoutParams badgeSpace = new LinearLayout.LayoutParams(-2, -2);
             badgeSpace.topMargin = dp(5);
             facts.addView(badge, badgeSpace);
-            activity.add(facts, activity.text(movie.releaseDate() + " · " + number.format(movie.votes())
+            activity.add(facts, activity.text((movie.releaseLabel().isEmpty() ? "" : movie.releaseLabel() + " · ") + number.format(movie.votes())
                     + " 票", 13, appearance.muted, false), 4);
             if (!movie.genres().isEmpty()) {
                 TextView genres = activity.text(String.join(" · ", movie.genres()), 12, appearance.muted, false);
@@ -344,7 +320,7 @@ final class MoviePushScreen {
         poster.setBackground(activity.shape(appearance.tint, 9, appearance.border));
         poster.setClipToOutline(true);
         poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        if (!movie.posterPath().isEmpty()) {
+        if (!movie.posterUrl().isEmpty()) {
             poster.setContentDescription(movie.title() + "海报");
         }
         return poster;
@@ -355,7 +331,7 @@ final class MoviePushScreen {
         Rect visible = new Rect();
         for (PosterBinding binding : posters) {
             if (binding.view().getLocalVisibleRect(visible) && visible.height() >= dp(8)) {
-                posterLoader.bind(binding.view(), binding.path());
+                posterLoader.bindImdb(binding.view(), binding.path());
             }
         }
     }
@@ -377,7 +353,9 @@ final class MoviePushScreen {
         }
         activity.add(facts, activity.text(String.format(Locale.ROOT, "IMDb %.1f · %,d 票", movie.rating(),
                 movie.votes()), 15, appearance.foreground, true), 5);
-        activity.add(facts, activity.text(movie.releaseDate() + " 上映", 13, appearance.muted, false), 7);
+        if (!movie.releaseLabel().isEmpty()) {
+            activity.add(facts, activity.text(movie.releaseLabel(), 13, appearance.muted, false), 7);
+        }
         if (!movie.genres().isEmpty()) {
             activity.add(facts, activity.text(String.join(" · ", movie.genres()), 13, appearance.muted, false), 8);
         }
@@ -393,8 +371,8 @@ final class MoviePushScreen {
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(movie.title()).setView(details)
                 .setNegativeButton("关闭", null)
                 .setPositiveButton("查找下载链接", (box, button) -> showReleases(movie)).show();
-        if (!movie.posterPath().isEmpty() && dialog.isShowing()) {
-            posterLoader.bind(poster, movie.posterPath());
+        if (!movie.posterUrl().isEmpty() && dialog.isShowing()) {
+            posterLoader.bindImdb(poster, movie.posterUrl());
         }
     }
 
@@ -513,7 +491,7 @@ final class MoviePushScreen {
 
     private PirateBayReleaseSource.SearchResult findReleases(ImdbMovieFeed.Movie movie) throws IOException {
         return new PirateBayReleaseSource().search(movie.originalTitle(), movie.title(),
-                movie.releaseDate().getYear(), movie.imdbId());
+                movie.year(), movie.imdbId());
     }
 
     private void showReleaseFilters(ReleaseFilter current, Consumer<ReleaseFilter> apply) {
@@ -736,8 +714,6 @@ final class MoviePushScreen {
         activity.runOnUiThread(() -> {
             if (worker == running && !activity.isDestroyed() && !activity.isFinishing()) {
                 worker = null;
-                activeFeed = null;
-                activeTmdb = null;
                 action.run();
             }
         });
@@ -750,10 +726,6 @@ final class MoviePushScreen {
             running.interrupt();
             SubtitleHttp.cancel(running);
         }
-        if (activeTmdb != null) activeTmdb.cancel();
-        if (activeFeed != null) activeFeed.cancel();
-        activeTmdb = null;
-        activeFeed = null;
     }
 
     private int dp(float value) {

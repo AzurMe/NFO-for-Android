@@ -11,7 +11,10 @@ import android.widget.GridView;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
+
+import org.w3c.dom.Element;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -40,6 +43,9 @@ final class PosterWallScreen implements AutoCloseable {
     private List<ScrapeEngine.LibraryMovie> library = Collections.emptyList();
     private List<String> tagLabels = Collections.emptyList();
     private Thread scan;
+    private Thread detailRead;
+    private AlertDialog movieDetails;
+    private AlertDialog trailerDialog;
     private Uri directory;
     private String selectedTag;
     private boolean closed;
@@ -86,6 +92,7 @@ final class PosterWallScreen implements AutoCloseable {
         grid.setPadding(activity.dp(16), activity.dp(4), activity.dp(16), activity.dp(16));
         grid.setClipToPadding(false);
         grid.setAdapter(adapter);
+        grid.setOnItemClickListener((parent, view, position, id) -> showMovie(adapter.getItem(position)));
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
     }
 
@@ -224,9 +231,56 @@ final class PosterWallScreen implements AutoCloseable {
         status.setText(visible.size() + " 部影片");
     }
 
+    private void showMovie(ScrapeEngine.LibraryMovie movie) {
+        if (movieDetails != null || closed) return;
+        LinearLayout body = activity.vertical();
+        body.setPadding(activity.dp(22), activity.dp(12), activity.dp(22), activity.dp(16));
+        TextView message = activity.text("正在读取 NFO…", 14, appearance.muted, false);
+        activity.add(body, message, 0);
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(body);
+        AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(movie.title())
+                .setView(scroll).setNegativeButton("关闭", null).create();
+        movieDetails = dialog;
+        dialog.setOnDismissListener(ignored -> {
+            if (detailRead != null) detailRead.interrupt();
+            detailRead = null;
+            movieDetails = null;
+        });
+        dialog.show();
+        detailRead = new Thread(() -> {
+            try {
+                byte[] bytes = MovieStorage.read(activity.getContentResolver(), movie.nfo(), ScrapeEngine.NFO_READ_LIMIT);
+                Element nfo = KodiNfoPreservation.readMovie(bytes);
+                activity.runOnUiThread(() -> {
+                    if (closed || movieDetails != dialog || !dialog.isShowing()) return;
+                    new PosterMovieDetails(activity, body).render(nfo, movie, source -> {
+                        stopTrailer();
+                        trailerDialog = TrailerPlayer.show(activity, source);
+                    });
+                });
+            } catch (IOException | RuntimeException failure) {
+                if (Thread.currentThread().isInterrupted()) return;
+                DebugLog.failure("poster-details", failure);
+                activity.runOnUiThread(() -> {
+                    if (movieDetails == dialog && dialog.isShowing()) message.setText("无法读取这部电影的 NFO。");
+                });
+            }
+        }, "PosterDetails");
+        detailRead.start();
+    }
+
+    void stopTrailer() {
+        if (trailerDialog != null) trailerDialog.dismiss();
+        trailerDialog = null;
+    }
+
     @Override public void close() {
         closed = true;
         if (scan != null) scan.interrupt();
+        if (detailRead != null) detailRead.interrupt();
+        stopTrailer();
+        if (movieDetails != null) movieDetails.dismiss();
         posters.close();
     }
 
@@ -235,12 +289,11 @@ final class PosterWallScreen implements AutoCloseable {
         @Override public int getCount() { return visible.size(); }
         @Override public ScrapeEngine.LibraryMovie getItem(int position) { return visible.get(position); }
         @Override public long getItemId(int position) { return position; }
-        @Override public boolean isEnabled(int position) { return false; }
 
         @Override public View getView(int position, View recycled, ViewGroup parent) {
             PosterCard card = recycled instanceof PosterCard current ? current : new PosterCard();
             ScrapeEngine.LibraryMovie movie = getItem(position);
-            card.title.setText(movie.year() > 0 ? movie.title() + " · " + movie.year() : movie.title());
+            card.setContentDescription(movie.year() > 0 ? movie.title() + " · " + movie.year() : movie.title());
             if (card.image.getTag() != posters) {
                 card.image.setImageDrawable(null);
                 card.image.setTag(posters);
@@ -252,13 +305,13 @@ final class PosterWallScreen implements AutoCloseable {
 
     private final class PosterCard extends LinearLayout {
         final ImageView image;
-        final TextView title;
 
         PosterCard() {
             super(activity);
             setOrientation(VERTICAL);
             setBackground(activity.shape(appearance.surface, 12, appearance.border));
             setClipToOutline(true);
+            setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
             image = new ImageView(activity) {
                 @Override protected void onMeasure(int widthSpec, int heightSpec) {
                     int width = MeasureSpec.getSize(widthSpec);
@@ -269,11 +322,6 @@ final class PosterWallScreen implements AutoCloseable {
             image.setBackgroundColor(appearance.tint);
             image.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
             addView(image, new LinearLayout.LayoutParams(-1, -2));
-            title = activity.text("", 14, appearance.foreground, true);
-            title.setPadding(activity.dp(9), activity.dp(8), activity.dp(9), activity.dp(8));
-            title.setLines(2);
-            title.setEllipsize(TextUtils.TruncateAt.END);
-            addView(title, new LinearLayout.LayoutParams(-1, -2));
         }
     }
 }

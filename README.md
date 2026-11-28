@@ -10,16 +10,18 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 首页从授权目录读取本地影片资料，按每行两张海报竖向排列。它显示已有有效电影 NFO、海报和背景图的影片。顶部显示常用标签，其余标签在 **更多标签** 中。标签取自 Kodi 使用的 NFO `<tag>` 字段。只存于 Kodi 资料库的标签可先导出到影片旁的 NFO，再刷新海报墙。应用打开、刮削或重命名后会自动刷新。[Kodi 电影 NFO 字段](https://kodi.wiki/view/NFO_files/Movies)
 
+点海报即可查看本地 NFO 中的剧情、上映日期、片长、评分、类型、标签和演职员。详情在本地读取，无需联网。
+
+详情中的 **播放预告片** 优先打开同目录的 `<视频名>-trailer.mp4` 等本地预告片，也能播放 NFO 中指向视频或 HLS 的 HTTPS 链接。它们使用 Android 开源系统的 VideoView，格式支持取决于设备解码器。TMDB 的影片视频接口提供预告片的站点和视频编号，应用把匹配到的 YouTube 编号写为 Kodi 支持的 `<trailer>` 链接。应用内通过官方 YouTube 播放器播放，受网络、地区和视频嵌入权限影响，可点 **在 YouTube 打开**。[TMDB 视频接口](https://developer.themoviedb.org/reference/movie-videos) · [Kodi 预告片规则](https://kodi.wiki/view/Trailers) · [Android VideoView](https://developer.android.com/reference/android/widget/VideoView) · [YouTube 嵌入播放器](https://developers.google.com/youtube/iframe_api_reference)
+
 从侧边栏切换 **电影刮削器**、**字幕下载器** 和 **电影推送**。刮削和字幕下载共用同一个已授权目录。
 
 ## 电影推送
 
-1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。应用沿用已配置的 TMDB 凭据取得近 30 天影片及其海报、简介和类型标签。点 **影片详情** 可以展开简介。
-2. 应用按 IMDb ID 匹配官方评分数据。**热门**按 IMDb 投票数排序，**高分**显示评分至少 7.0 的影片并按分数排序。评分数据在设备上缓存 24 小时，供个人非商业使用。[IMDb 公开数据集](https://developer.imdb.com/non-commercial-datasets/) · [使用说明](https://help.imdb.com/article/imdb/general-information/can-i-use-imdb-data-in-my-software/G5JTRESSHJBBHTGX)
+1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。近 30 天的影片、评分、简介和海报直接来自 IMDb，推荐无需 TMDB 凭据。点 **影片详情** 可以展开 IMDb 提供的简介和类型。IMDb 网页无法访问时，应用会显示该来源的错误。[IMDb 高级搜索](https://www.imdb.com/search/)
+2. **热门**按 IMDb 投票数排序，**高分**显示评分至少 7.0 的影片并按分数排序。
 3. 点 **查找下载链接**，合并海盗湾按 IMDb ID 和片名、年份返回的相关记录，并按做种人数从高到低排序。部分查询超时后，仍会显示已取得的结果，并可点 **重试**。查询达到来源的单次返回上限时会显示提示。[APiBay](https://apibay.org/)
 4. 点 **筛选**，可组合分辨率、HDR 格式、容量上限、最少做种数和标题关键字，也可一键使用 **2160p · HDR10 · 小于 40 GB** 预设。容量按十进制 GB 比较，规格以发布标题标注为准。选中候选后可复制磁力链接或在已安装的应用中打开。
-
-Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 
 ## 安装和刮削
 
@@ -43,7 +45,7 @@ Information courtesy of IMDb (https://www.imdb.com). Used with permission.
 - **TMDB** 是默认来源。填写自己的 **API Key** 或 **API Read Access Token**。[TMDB API 设置](https://www.themoviedb.org/settings/api) · [TMDB 认证说明](https://developer.themoviedb.org/docs/authentication-application)
 - **TheTVDB** 可独立使用。选择后，点 **配置 TheTVDB**，填写自己的 **v4 API Key**，订阅密钥还需填写对应 **PIN**。用同卡片里的 **测试连接** 验证凭据。[TheTVDB 密钥设置](https://www.thetvdb.com/dashboard/account/apikey) · [TheTVDB API 文档](https://thetvdb.github.io/v4-api/)
 - 两个来源使用相同的 Kodi NFO 格式、图片命名和字幕流程。TheTVDB 的翻译、演职员和图片取决于该片在来源中的覆盖情况。缺少本地海报或背景图会提示待补。TheTVDB 的热度值不写入影片评分。需要评分和合集时，可在 **配置 TheTVDB** 启用 **使用已配置的 TMDB 补齐评分和合集**。应用会匹配影片编号后再补充这些字段，已有 NFO 评分仍会保留。
-- 切换资料来源后，可以使用 **手动匹配影片** 重新生成资料齐全的旧 NFO。电影推送继续使用 TMDB。
+- 切换资料来源后，可以使用 **手动匹配影片** 重新生成资料齐全的旧 NFO。
 
 Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/)
 
@@ -114,6 +116,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.12.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.12.0)
+
+- 海报墙卡片只显示海报。点按后从本地 NFO 读取影片详情。
+- 从影片详情播放本地预告片、HTTPS 视频或 NFO 里的 YouTube 预告片。
+- 电影推送直接读取 IMDb 的近 30 天热门与高分影片，海报从 IMDb 的图片服务加载。
 
 ### [v1.11.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.11.0)
 
