@@ -339,29 +339,48 @@ final class AssrtSubtitleSource implements SubtitleSource {
     }
 
     String diagnose() throws IOException {
+        return diagnoseRoutes().report();
+    }
+
+    record Diagnostic(String report, boolean reachable) {}
+
+    private record Route(String result, boolean reachable) {}
+
+    Diagnostic diagnoseRoutes() throws IOException {
         String credential = TOKEN.matcher(token).matches() ? token : "";
         String heading = "伪射手 API · " + (credential.isEmpty()
                 ? token.isEmpty() ? "未填写 Token" : "Token 格式无效"
                 : "检测 Token");
-        return heading + "\n" + probeHost(API_HOST, credential) + "\n" + probeHost(BACKUP_API_HOST, credential);
+        Route primary = probeHost(API_HOST, credential);
+        Route backup = probeHost(BACKUP_API_HOST, credential);
+        boolean reachable = primary.reachable() || backup.reachable();
+        DebugLog.event("assrt-probe", "result=" + (reachable ? "api_response" : "unreachable"));
+        return new Diagnostic(heading + "\n" + primary.result() + "\n" + backup.result(), reachable);
     }
 
-    private String probeHost(String host, String credential) throws IOException {
+    private Route probeHost(String host, String credential) throws IOException {
         String result;
+        boolean reachable;
         try {
             JSONObject response = requestPreferredApi(host, "user/quota", credential);
             int status = response.optInt("status", -1);
             if (status >= 0) markBackupReachable(host);
             result = probeResult(status, 200, credential);
+            reachable = status >= 0;
+            DebugLog.event("assrt-probe", "host=" + host + " http=200 api_status=" + status);
         } catch (SubtitleHttp.HttpException error) {
             if (!rememberBackupFailure(host, error) && error.apiStatus >= 0) markBackupReachable(host);
             result = probeResult(error.apiStatus, error.statusCode, credential);
+            reachable = error.apiStatus >= 0 || error.statusCode == 401 || error.statusCode == 429;
+            DebugLog.event("assrt-probe", "host=" + host + " http=" + error.statusCode + " api_status=" + error.apiStatus);
         } catch (IOException error) {
             checkRunning();
             rememberBackupFailure(host, error);
             result = error.getMessage();
+            reachable = false;
+            DebugLog.event("assrt-probe", "host=" + host + " result=" + DebugLog.networkReason(error));
         }
-        return host + " · " + result;
+        return new Route(host + " · " + result, reachable);
     }
 
     private static String probeResult(int status, int httpStatus, String credential) {

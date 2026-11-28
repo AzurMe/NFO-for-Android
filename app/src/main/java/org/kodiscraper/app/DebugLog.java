@@ -6,9 +6,17 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.EOFException;
+import java.net.ConnectException;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Instant;
+import java.util.Locale;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLPeerUnverifiedException;
 
 final class DebugLog {
     private static final long SEGMENT_LIMIT = 1024 * 1024;
@@ -49,8 +57,18 @@ final class DebugLog {
     }
 
     static void failure(String category, Throwable problem) {
+        failure(category, "", problem);
+    }
+
+    static void networkFailure(String host, int status, Throwable problem) {
         if (!enabled) return;
-        StringBuilder trace = new StringBuilder(problem.getClass().getSimpleName());
+        failure("http:" + host, "phase=" + (status > 0 ? "response" : "before_http_status")
+                + " reason=" + networkReason(problem) + " ", problem);
+    }
+
+    private static void failure(String category, String details, Throwable problem) {
+        if (!enabled) return;
+        StringBuilder trace = new StringBuilder(details).append(problem.getClass().getSimpleName());
         int frames = 0;
         for (StackTraceElement frame : problem.getStackTrace()) {
             if (!frame.getClassName().startsWith("org.kodiscraper.app.")) continue;
@@ -60,6 +78,28 @@ final class DebugLog {
         }
         if (problem.getCause() != null) trace.append(" cause=").append(problem.getCause().getClass().getSimpleName());
         event(category, trace.toString());
+    }
+
+    static String networkReason(Throwable problem) {
+        String reason = "io_error";
+        Throwable error = problem;
+        for (int depth = 0; error != null && depth < 10; depth++, error = error.getCause()) {
+            if (error instanceof SSLPeerUnverifiedException
+                    || error instanceof java.security.cert.CertificateException) return "tls_peer_unverified";
+            if (error instanceof UnknownHostException) return "dns_failure";
+            if (error instanceof SocketTimeoutException) return "timeout";
+            if (error instanceof EOFException) return "unexpected_eof";
+            if (error instanceof SocketException || error instanceof SSLException) {
+                String message = error.getMessage() == null ? "" : error.getMessage().toLowerCase(Locale.ROOT);
+                if (message.contains("reset") || message.contains("econnreset")) return "connection_reset";
+                if (message.contains("broken pipe")) return "broken_pipe";
+                if (message.contains("refused")) return "connection_refused";
+                if (error instanceof ConnectException) reason = "connect_error";
+                else if (error instanceof SSLException) reason = "tls_error";
+                else reason = "socket_error";
+            }
+        }
+        return reason;
     }
 
     static long elapsed(long started) {

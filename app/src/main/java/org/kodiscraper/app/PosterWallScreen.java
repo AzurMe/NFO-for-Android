@@ -1,5 +1,6 @@
 package org.kodiscraper.app;
 
+import android.app.AlertDialog;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.view.View;
@@ -17,11 +18,15 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 final class PosterWallScreen implements AutoCloseable {
+    private static final int TOP_TAGS = 7;
+    private static final Object MORE_TAGS = new Object();
     private final MainActivity activity;
     private final AppAppearance appearance;
     private final LinearLayout root;
@@ -33,12 +38,13 @@ final class PosterWallScreen implements AutoCloseable {
     private final PosterAdapter adapter = new PosterAdapter();
     private MoviePosterLoader posters;
     private List<ScrapeEngine.LibraryMovie> library = Collections.emptyList();
+    private List<String> tagLabels = Collections.emptyList();
     private Thread scan;
     private Uri directory;
     private String selectedTag;
     private boolean closed;
 
-    PosterWallScreen(MainActivity activity, Runnable refresh, Runnable pickFolder) {
+    PosterWallScreen(MainActivity activity, Runnable refresh, Runnable pickFolder, Runnable organize) {
         this.activity = activity;
         appearance = activity.appearance();
         posters = new MoviePosterLoader(activity.getContentResolver());
@@ -46,7 +52,15 @@ final class PosterWallScreen implements AutoCloseable {
         Button reload = activity.button("刷新", appearance.tint, appearance.accent);
         reload.setContentDescription("刷新海报墙");
         reload.setOnClickListener(view -> refresh.run());
-        root.addView(activity.createToolbar("电影海报墙", reload));
+        LinearLayout actions = activity.horizontal();
+        Button clean = activity.button("整理", appearance.tint, appearance.accent);
+        clean.setContentDescription("整理与重命名");
+        clean.setOnClickListener(view -> organize.run());
+        actions.addView(clean, new LinearLayout.LayoutParams(-2, activity.dp(48)));
+        LinearLayout.LayoutParams reloadSpace = new LinearLayout.LayoutParams(-2, activity.dp(48));
+        reloadSpace.leftMargin = activity.dp(6);
+        actions.addView(reload, reloadSpace);
+        root.addView(activity.createToolbar("电影海报墙", actions));
         tagScroll = new HorizontalScrollView(activity);
         tagScroll.setVisibility(View.GONE);
         tagScroll.setHorizontalScrollBarEnabled(false);
@@ -133,17 +147,34 @@ final class PosterWallScreen implements AutoCloseable {
         posters.close();
         posters = new MoviePosterLoader(activity.getContentResolver());
         library = found;
-        Set<String> labels = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
-        for (ScrapeEngine.LibraryMovie movie : found) labels.addAll(movie.tags());
-        if (selectedTag != null && !labels.contains(selectedTag)) selectedTag = null;
-        tags.removeAllViews();
-        addTag("全部", null);
-        for (String tag : labels) addTag(tag, tag);
-        tagScroll.setVisibility(found.isEmpty() ? View.GONE : View.VISIBLE);
+        Map<String, Integer> counts = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (ScrapeEngine.LibraryMovie movie : found) {
+            Set<String> labels = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+            labels.addAll(movie.tags());
+            for (String label : labels) counts.merge(label, 1, Integer::sum);
+        }
+        tagLabels = new ArrayList<>(counts.keySet());
+        tagLabels.sort(Comparator.comparingInt((String label) -> counts.get(label)).reversed()
+                .thenComparing(String.CASE_INSENSITIVE_ORDER));
+        if (selectedTag != null && !counts.containsKey(selectedTag)) selectedTag = null;
+        rebuildTags();
         filter();
     }
 
-    private void addTag(String label, String value) {
+    private void rebuildTags() {
+        tags.removeAllViews();
+        tagScroll.setVisibility(tagLabels.isEmpty() ? View.GONE : View.VISIBLE);
+        if (tagLabels.isEmpty()) return;
+        addTag("全部", null);
+        List<String> featured = tagLabels.subList(0, Math.min(TOP_TAGS, tagLabels.size()));
+        for (String tag : featured) addTag(tag, tag);
+        if (selectedTag != null && featured.stream().noneMatch(selectedTag::equalsIgnoreCase)) {
+            addTag(selectedTag, selectedTag);
+        }
+        if (tagLabels.size() > TOP_TAGS) addTag("更多标签", MORE_TAGS);
+    }
+
+    private void addTag(String label, Object value) {
         Button chip = activity.button(label, appearance.surface, appearance.muted);
         chip.setTextSize(13);
         chip.setMaxWidth(activity.dp(210));
@@ -151,7 +182,11 @@ final class PosterWallScreen implements AutoCloseable {
         chip.setEllipsize(TextUtils.TruncateAt.END);
         chip.setTag(value);
         chip.setOnClickListener(view -> {
-            selectedTag = value;
+            if (value == MORE_TAGS) {
+                showAllTags();
+                return;
+            }
+            selectedTag = (String) value;
             filter();
         });
         LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-2, activity.dp(40));
@@ -159,9 +194,20 @@ final class PosterWallScreen implements AutoCloseable {
         tags.addView(chip, space);
     }
 
+    private void showAllTags() {
+        String[] choices = tagLabels.toArray(new String[0]);
+        new AlertDialog.Builder(activity).setTitle("Kodi 标签")
+                .setItems(choices, (dialog, index) -> {
+                    selectedTag = choices[index];
+                    rebuildTags();
+                    filter();
+                }).setNegativeButton("关闭", null).show();
+    }
+
     private void filter() {
         for (int index = 0; index < tags.getChildCount(); index++) {
             Button chip = (Button) tags.getChildAt(index);
+            if (chip.getTag() == MORE_TAGS) continue;
             String value = (String) chip.getTag();
             boolean active = value == null ? selectedTag == null : value.equalsIgnoreCase(selectedTag);
             chip.setSelected(active);

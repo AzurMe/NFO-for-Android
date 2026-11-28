@@ -77,7 +77,6 @@ final class KodiNfo {
         } else {
             writeCountryCodes(xml, movie.optJSONArray("origin_country"), locale);
         }
-        writeNames(xml, "tag", array(movie.optJSONObject("keywords"), "keywords"));
 
         JSONObject credits = movie.optJSONObject("credits");
         writeCrew(xml, array(credits, "crew"));

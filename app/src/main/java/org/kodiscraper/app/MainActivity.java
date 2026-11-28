@@ -43,6 +43,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -53,9 +54,16 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 public final class MainActivity extends Activity {
+    private static final int TMDB_BATCH_CONCURRENCY = 3;
     private static final int PICK_FOLDER = 1;
     private static final int PICK_COLLECTION_FOLDER = 2;
     private static final int EXPORT_DEBUG_LOG = 3;
@@ -162,7 +170,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.10.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.11.0 android_api=" + Build.VERSION.SDK_INT);
         history = new ScrapeHistory(this);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
@@ -243,6 +251,10 @@ public final class MainActivity extends Activity {
         frame.addView(pageHost, new FrameLayout.LayoutParams(-1, -1));
         posterWall = new PosterWallScreen(this, this::refreshPosters, () -> {
             if (!busy) chooseFolder();
+        }, () -> {
+            if (busy) return;
+            showPage(Page.SCRAPER);
+            previewMovieOrganization();
         });
         pageHost.addView(posterWall.view(), viewport());
         scraperPage = vertical();
@@ -322,7 +334,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.10.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.11.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -1216,10 +1228,10 @@ public final class MainActivity extends Activity {
     private void validateAssrt() {
         AssrtSubtitleSource source = new AssrtSubtitleSource(savedAssrtToken);
         begin(null, "正在检测伪射手连接…", () -> {
-            String report = source.diagnose();
+            AssrtSubtitleSource.Diagnostic diagnostic = source.diagnoseRoutes();
             return () -> {
-                runState.setText("伪射手连接检测完成");
-                note(report);
+                runState.setText(diagnostic.reachable() ? "伪射手 API 已响应" : "伪射手两条线路均未连通");
+                note(diagnostic.report());
             };
         });
     }
@@ -1261,7 +1273,9 @@ public final class MainActivity extends Activity {
         boolean downloadActors = actors.isChecked();
         boolean downloadAlternate = alternateFanart.isChecked();
         boolean byFolder = preferFolder.isChecked();
-        SubtitleScraper subtitles = autoSubtitles.isChecked() ? subtitleScraper() : null;
+        String assrt = savedAssrtToken;
+        String subdl = savedSubdlKey;
+        Supplier<SubtitleScraper> subtitles = autoSubtitles.isChecked() ? () -> new SubtitleScraper(assrt, subdl) : null;
         persistOptions();
         needsReview.clear();
         beginLibraryTask(client, "正在扫描目录… · " + client.provider().label, () -> {
@@ -1306,19 +1320,9 @@ public final class MainActivity extends Activity {
             Batch batch = new Batch();
             batch.skipped = complete.size();
             SubtitleBatch subtitleBatch = new SubtitleBatch();
-            for (MovieStorage.Movie movie : pending) {
-                ScrapeEngine.checkCancelled();
-                int index = ++batch.started;
-                post(() -> setProgress(index, pending.size(), "刮削 · " + movie.title));
-                try (SubtitleWork work = startSubtitles(subtitles, storage, movie, 0)) {
-                    SubtitleQuery match = scrapeBatchMovie(engine, movie, work, batch, pending.size());
-                    if (work != null) {
-                        work.matched(match == null ? ScrapeEngine.subtitleQuery(storage, movie) : match);
-                        recordSubtitles(movie, subtitleBatch, work::result);
-                    }
-                }
-            }
+            scrapePending(pending, storage, engine, client, subtitles, batch, subtitleBatch);
             if (subtitles != null) {
+                SubtitleScraper scraper = subtitles.get();
                 for (int index = 0; index < complete.size(); index++) {
                     ScrapeEngine.checkCancelled();
                     MovieStorage.Movie movie = complete.get(index);
@@ -1328,7 +1332,7 @@ public final class MainActivity extends Activity {
                         note("已跳过（本地资料齐全） · " + movie.relativePath);
                     });
                     SubtitleQuery query = ScrapeEngine.subtitleQuery(storage, movie);
-                    recordSubtitles(movie, subtitleBatch, () -> subtitles.download(query));
+                    recordSubtitles(movie, subtitleBatch, () -> scraper.download(query));
                 }
             }
             String summary = batch.summary(pending.size(), pending.size())
@@ -1337,8 +1341,79 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private record FilmRun(String title, Batch metadata, SubtitleBatch subtitles) {}
+
+    private void scrapePending(List<MovieStorage.Movie> pending, MovieStorage storage, ScrapeEngine engine,
+                               MovieMetadataSource client, Supplier<SubtitleScraper> subtitles,
+                               Batch batch, SubtitleBatch subtitleBatch) throws IOException {
+        if (pending.isEmpty()) return;
+        int width = Math.min(pending.size(), client.provider() == MovieMetadataSource.Provider.TMDB
+                ? TMDB_BATCH_CONCURRENCY : 1);
+        post(() -> note("开始刮削 " + pending.size() + " 部 · 并行 " + width + " 部"));
+        DebugLog.event("metadata", "queued=" + pending.size() + " workers=" + width);
+        ExecutorService workers = Executors.newFixedThreadPool(width, job -> new Thread(job, "MovieBatch"));
+        ExecutorCompletionService<FilmRun> queue = new ExecutorCompletionService<>(workers);
+        int submitted = 0;
+        int completed = 0;
+        try {
+            while (submitted < width) {
+                int index = submitted++;
+                queue.submit(() -> scrapeFilm(storage, engine, pending.get(index), index + 1, subtitles));
+            }
+            while (completed < pending.size()) {
+                FilmRun run = queue.take().get();
+                batch.add(run.metadata());
+                subtitleBatch.add(run.subtitles());
+                int count = ++completed;
+                post(() -> setProgress(count, pending.size(), "已处理 · " + run.title()));
+                ScrapeEngine.checkCancelled();
+                if (submitted < pending.size()) {
+                    int index = submitted++;
+                    queue.submit(() -> scrapeFilm(storage, engine, pending.get(index), index + 1, subtitles));
+                }
+            }
+        } catch (InterruptedException cancelled) {
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException("操作已停止");
+        } catch (ExecutionException failure) {
+            int count = completed;
+            post(() -> note(batch.summary(count, pending.size())));
+            Throwable cause = failure.getCause();
+            if (cause instanceof IOException io) throw io;
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            throw new IOException("并行刮削失败", cause);
+        } finally {
+            workers.shutdownNow();
+            if (completed < pending.size()) client.cancel();
+            boolean interrupted = Thread.interrupted();
+            while (!workers.isTerminated()) {
+                try {
+                    workers.awaitTermination(1, TimeUnit.SECONDS);
+                } catch (InterruptedException cancelled) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private FilmRun scrapeFilm(MovieStorage storage, ScrapeEngine engine, MovieStorage.Movie movie, int index,
+                               Supplier<SubtitleScraper> subtitles) throws IOException {
+        Batch movieBatch = new Batch();
+        movieBatch.started = index;
+        SubtitleBatch subtitleBatch = new SubtitleBatch();
+        try (SubtitleWork work = startSubtitles(subtitles == null ? null : subtitles.get(), storage, movie, 0)) {
+            SubtitleQuery match = scrapeBatchMovie(engine, movie, work, movieBatch);
+            if (work != null) {
+                work.matched(match == null ? ScrapeEngine.subtitleQuery(storage, movie) : match);
+                recordSubtitles(movie, subtitleBatch, work::result);
+            }
+        }
+        return new FilmRun(movie.title, movieBatch, subtitleBatch);
+    }
+
     private SubtitleQuery scrapeBatchMovie(ScrapeEngine engine, MovieStorage.Movie movie, SubtitleWork work,
-                                            Batch batch, int total) throws IOException {
+                                            Batch batch) throws IOException {
         try {
             ScrapeEngine.Outcome scraped = engine.scrape(movie, 0,
                     message -> post(() -> note(movie.relativePath + " · " + message)),
@@ -1353,8 +1428,6 @@ public final class MainActivity extends Activity {
         } catch (IOException problem) {
             ScrapeEngine.checkCancelled();
             if (shouldStopBatch(problem)) {
-                String summary = batch.summary(batch.started - 1, total);
-                post(() -> note(summary));
                 throw problem;
             }
             if (problem instanceof MovieMetadataSource.HttpError http && http.statusCode == 404) {
@@ -1955,7 +2028,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.10.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.11.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -2019,6 +2092,14 @@ public final class MainActivity extends Activity {
         int review;
         int failed;
 
+        void add(Batch run) {
+            written += run.written;
+            incomplete += run.incomplete;
+            preserved += run.preserved;
+            review += run.review;
+            failed += run.failed;
+        }
+
         void count(ScrapeEngine.Result result) {
             switch (result) {
                 case WRITTEN: written++; break;
@@ -2040,6 +2121,13 @@ public final class MainActivity extends Activity {
         int duplicates;
         int missing;
         int failed;
+
+        void add(SubtitleBatch run) {
+            written += run.written;
+            duplicates += run.duplicates;
+            missing += run.missing;
+            failed += run.failed;
+        }
 
         String summary() {
             return "字幕 · 保存 " + written + " 个 · 已有 " + duplicates + " 个 · 未匹配 " + missing

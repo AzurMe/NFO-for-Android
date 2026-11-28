@@ -405,7 +405,7 @@ final class ScrapeEngine {
         return written;
     }
 
-    private int saveCollectionArtwork(JSONObject movie) throws IOException {
+    private synchronized int saveCollectionArtwork(JSONObject movie) throws IOException {
         JSONObject collection = movie.optJSONObject("belongs_to_collection");
         int id = collection == null ? 0 : collection.optInt("id");
         if (id <= 0 || savedCollections.contains(id)) {
@@ -681,9 +681,13 @@ final class ScrapeEngine {
                 if (tag.equals("title")) {
                     String title = parser.nextText().trim();
                     if (!title.isEmpty()) ids.title = title;
-                } else if (tag.equals("genre") || tag.equals("tag")) {
-                    String value = parser.nextText().trim();
-                    if (!value.isEmpty() && value.length() <= 80 && ids.tags.size() < 128) ids.tags.add(value);
+                } else if (tag.equals("tag")) {
+                    if ("true".equalsIgnoreCase(parser.getAttributeValue(null, "clear"))) ids.tags.clear();
+                    // Kodi separates multiple values inside one tag with its default video separator.
+                    for (String value : parser.nextText().split(" / ")) {
+                        String trimmed = value.trim();
+                        if (!trimmed.isEmpty()) ids.tags.add(trimmed);
+                    }
                 } else if (tag.equals("year") || tag.equals("premiered")) {
                     String value = parser.nextText().trim();
                     if (tag.equals("year") || (ids.year == 0 && value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}"))) {

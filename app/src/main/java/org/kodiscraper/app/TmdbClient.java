@@ -42,6 +42,9 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLException;
 
 public final class TmdbClient implements MovieMetadataSource {
+    private static final Object API_RATE_LOCK = new Object();
+    private static final long API_INTERVAL_NANOS = 125_000_000L;
+    private static long earliestApiRequest = System.nanoTime();
     private static final String API_BASE = "https://api.themoviedb.org/3";
     private static final String IMAGE_BASE = "https://image.tmdb.org/t/p/";
     private static final String DIAGNOSTIC_IMAGE = IMAGE_BASE + "w92/1E5baAaEse26fej7uHcjOgEE2t2.jpg";
@@ -70,7 +73,7 @@ public final class TmdbClient implements MovieMetadataSource {
     private final String bearerToken;
     private final String language;
     private final String languageCode;
-    private final Map<Integer, JSONObject> collections = new HashMap<>();
+    private final Map<Integer, JSONObject> collections = Collections.synchronizedMap(new HashMap<>());
     private final Set<HttpURLConnection> activeRequests = new HashSet<>();
     private volatile boolean cancelled;
     private boolean configurationLoaded;
@@ -894,7 +897,7 @@ public final class TmdbClient implements MovieMetadataSource {
         return type.equals("Trailer") || type.equals("Teaser") ? type : "";
     }
 
-    private JSONObject configuration() throws IOException {
+    private synchronized JSONObject configuration() throws IOException {
         checkRunning();
         if (configurationLoaded) return imageConfiguration;
         JSONObject response = json("/configuration");
@@ -958,6 +961,7 @@ public final class TmdbClient implements MovieMetadataSource {
         ProbeState state;
         HttpURLConnection connection = null;
         try {
+            if (!image) awaitApiSlot();
             connection = openRequest(address, PROBE_TIMEOUT_MILLIS, PROBE_TIMEOUT_MILLIS);
             connection.setUseCaches(false);
             connection.setRequestProperty("Accept", image ? "image/jpeg" : "application/json");
@@ -966,6 +970,7 @@ public final class TmdbClient implements MovieMetadataSource {
                 connection.setRequestProperty("Authorization", "Bearer " + bearerToken);
             }
             status = Math.max(0, connection.getResponseCode());
+            if (!image && status == 429) postponeApi(retryDelay(connection.getHeaderField("Retry-After")));
             DebugLog.http(connection.getURL().getHost(), status, started);
             checkRunning();
             state = readProbeState(connection, status, authenticated, image);
@@ -1052,6 +1057,7 @@ public final class TmdbClient implements MovieMetadataSource {
 
     private byte[] request(String address, boolean api, int maxBytes) throws IOException {
         long started = System.nanoTime();
+        if (api) awaitApiSlot();
         HttpURLConnection connection = openRequest(address, 10000, 14000);
         try {
             connection.setRequestProperty("Accept", api ? "application/json" : "image/*");
@@ -1062,7 +1068,9 @@ public final class TmdbClient implements MovieMetadataSource {
             DebugLog.http(connection.getURL().getHost(), status, started);
             checkRunning();
             if (status != HttpURLConnection.HTTP_OK) {
-                throw new HttpException(status, api, retryDelay(connection.getHeaderField("Retry-After")));
+                long retry = retryDelay(connection.getHeaderField("Retry-After"));
+                if (api && status == 429) postponeApi(retry);
+                throw new HttpException(status, api, retry);
             }
             return readResponse(connection, maxBytes);
         } catch (IOException failure) {
@@ -1115,12 +1123,42 @@ public final class TmdbClient implements MovieMetadataSource {
     private static long retryDelay(String retryAfter) {
         if (retryAfter != null) {
             try {
-                return Math.max(0, Math.min(60, Long.parseLong(retryAfter.trim()))) * 1000;
+                return Math.max(0, Math.min(86_400, Long.parseLong(retryAfter.trim()))) * 1000;
             } catch (NumberFormatException ignored) {
-                return 1500;
+                try {
+                    long date = java.time.ZonedDateTime.parse(retryAfter.trim(),
+                            java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli();
+                    return Math.max(0, Math.min(86_400_000, date - System.currentTimeMillis()));
+                } catch (java.time.format.DateTimeParseException invalidDate) {
+                    return 1500;
+                }
             }
         }
         return 1000;
+    }
+
+    private void awaitApiSlot() throws IOException {
+        while (true) {
+            checkRunning();
+            long remaining;
+            synchronized (API_RATE_LOCK) {
+                long now = System.nanoTime();
+                remaining = earliestApiRequest - now;
+                if (remaining <= 0) {
+                    earliestApiRequest = now + API_INTERVAL_NANOS;
+                    return;
+                }
+            }
+            delay(Math.max(1, (remaining + 999_999) / 1_000_000));
+        }
+    }
+
+    private static void postponeApi(long milliseconds) {
+        synchronized (API_RATE_LOCK) {
+            long deadline = System.nanoTime() + Math.max(1000, milliseconds) * 1_000_000;
+            if (deadline - earliestApiRequest > 0) earliestApiRequest = deadline;
+        }
+        DebugLog.event("tmdb-api", "rate_limited backoff_ms=" + Math.max(1000, milliseconds));
     }
 
     private void delay(long milliseconds) throws IOException {
