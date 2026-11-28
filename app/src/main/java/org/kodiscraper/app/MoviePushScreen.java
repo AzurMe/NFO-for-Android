@@ -58,6 +58,8 @@ final class MoviePushScreen {
 
     private List<ImdbMovieFeed.Movie> movies = Collections.emptyList();
     private LocalDate loadedThrough;
+    private boolean highRatedComplete;
+    private String refreshProblem = "";
     private boolean highRated;
     private boolean requested;
     private boolean loadingFeed;
@@ -128,11 +130,12 @@ final class MoviePushScreen {
         return worker != null;
     }
 
-    record State(List<ImdbMovieFeed.Movie> movies, LocalDate loadedThrough, boolean highRated, int scrollY) {}
+    record State(List<ImdbMovieFeed.Movie> movies, LocalDate loadedThrough, boolean highRatedComplete,
+                 String refreshProblem, boolean highRated, int scrollY) {}
 
     State saveState() {
         return new State(Collections.unmodifiableList(new ArrayList<>(movies)), loadedThrough,
-                highRated, movieList.getScrollY());
+                highRatedComplete, refreshProblem, highRated, movieList.getScrollY());
     }
 
     void restoreState(State state) {
@@ -145,6 +148,8 @@ final class MoviePushScreen {
         if (state.loadedThrough() != null) {
             loadedThrough = state.loadedThrough();
             movies = state.movies();
+            highRatedComplete = state.highRatedComplete();
+            refreshProblem = state.refreshProblem();
             requested = true;
             updateRange();
             renderMovies();
@@ -171,8 +176,8 @@ final class MoviePushScreen {
         if (loadingFeed) {
             stopWork();
             setFeedLoading(false);
+            refreshProblem = "已取消刷新";
             renderMovies();
-            status.setText("已取消刷新");
         } else if (worker == null) {
             refreshMovies();
         }
@@ -186,8 +191,10 @@ final class MoviePushScreen {
         setFeedLoading(true);
         status.setText("正在从 IMDb 读取近 30 天上映的影片…");
         launch(() -> feed.load(today), result -> {
-            movies = result;
+            movies = result.movies();
             loadedThrough = today;
+            highRatedComplete = result.highRatedComplete();
+            refreshProblem = "";
             updateRange();
             setFeedLoading(false);
             renderMovies();
@@ -196,8 +203,8 @@ final class MoviePushScreen {
             }
         }, error -> {
             setFeedLoading(false);
+            refreshProblem = "刷新失败 · " + error;
             renderMovies();
-            status.setText("刷新失败 · " + error);
         });
     }
 
@@ -247,8 +254,13 @@ final class MoviePushScreen {
         }
         entries.removeAllViews();
         posters.clear();
-        if (loadedThrough != null) {
-            status.setText(visible.isEmpty() ? "这段时间暂无符合条件的已评分影片。" : "共 " + visible.size() + " 部");
+        if (loadedThrough == null) {
+            status.setText(refreshProblem);
+        } else {
+            String summary = visible.isEmpty() ? "当前结果暂无符合条件的已评分影片。" : "共 " + visible.size() + " 部";
+            if (!highRatedComplete) summary += "\nIMDb 高分榜结果可能不完整。";
+            if (!refreshProblem.isEmpty()) summary = refreshProblem + "\n上次结果 · " + summary;
+            status.setText(summary);
         }
         NumberFormat number = NumberFormat.getIntegerInstance(Locale.SIMPLIFIED_CHINESE);
         for (ImdbMovieFeed.Movie movie : visible) {

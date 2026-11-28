@@ -16,14 +16,11 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
-import java.security.cert.CertPathValidatorException;
-import java.security.cert.CertificateException;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 
 import javax.net.ssl.SSLException;
-import javax.net.ssl.SSLPeerUnverifiedException;
 
 final class SubtitleHttp {
     private static final int JSON_LIMIT = 1024 * 1024;
@@ -67,18 +64,24 @@ final class SubtitleHttp {
     static byte[] get(String address, String header, String credential, int limit, int connectTimeoutMillis,
                       int readTimeoutMillis, String... domains) throws IOException {
         return request(address, header, credential, null, limit, connectTimeoutMillis, readTimeoutMillis,
-                false, domains);
+                false, false, domains);
+    }
+
+    static byte[] getOk(String address, String header, String credential, int limit, String... domains)
+            throws IOException {
+        return request(address, header, credential, null, limit, CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS,
+                false, true, domains);
     }
 
     static byte[] getFresh(String address, String header, String credential, int limit, String... domains)
             throws IOException {
         return request(address, header, credential, null, limit, CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS,
-                true, domains);
+                true, false, domains);
     }
 
     static byte[] postForm(String address, String form, int limit, String... domains) throws IOException {
         return request(address, null, null, form.getBytes(StandardCharsets.UTF_8), limit,
-                CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS, false, domains);
+                CONNECT_TIMEOUT_MILLIS, READ_TIMEOUT_MILLIS, false, false, domains);
     }
 
     static boolean isRetryableConnection(IOException failure) {
@@ -97,7 +100,7 @@ final class SubtitleHttp {
 
     private static byte[] request(String address, String header, String credential, byte[] form, int limit,
                                   int connectTimeoutMillis, int readTimeoutMillis, boolean fresh,
-                                  String[] domains) throws IOException {
+                                  boolean requireOk, String[] domains) throws IOException {
         URI target = address(address);
         String origin = target.getHost();
         Thread worker = Thread.currentThread();
@@ -118,7 +121,7 @@ final class SubtitleHttp {
                 connection.setConnectTimeout(connectTimeoutMillis);
                 connection.setReadTimeout(readTimeoutMillis);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.14.0");
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.15.0");
                 if (fresh) {
                     connection.setUseCaches(false);
                     connection.setRequestProperty("Connection", "close");
@@ -151,7 +154,7 @@ final class SubtitleHttp {
                     }
                     continue;
                 }
-                if (code < 200 || code >= 300) {
+                if (code < 200 || code >= 300 || (requireOk && code != HttpURLConnection.HTTP_OK)) {
                     throw new HttpException(code, errorStatus(connection));
                 }
                 if (connection.getContentLengthLong() > limit) {
@@ -176,13 +179,15 @@ final class SubtitleHttp {
             } catch (SSLException failure) {
                 DebugLog.networkFailure(target.getHost(), status, failure);
                 ScrapeEngine.checkCancelled();
-                if ("tls_peer_unverified".equals(DebugLog.networkReason(failure))) {
+                if (DebugLog.unverifiedPeer(failure)) {
                     throw new IOException("字幕服务器 TLS 对端身份校验失败", failure);
                 }
                 if (fresh && tlsConnectionDropped(failure)) {
                     throw new ConnectionException("字幕 HTTPS 连接被重置或提前断开", failure);
                 }
                 throw new IOException("字幕服务器的 HTTPS 连接失败", failure);
+            } catch (HttpException response) {
+                throw response;
             } catch (IOException failure) {
                 DebugLog.networkFailure(target.getHost(), status, failure);
                 throw failure;
@@ -202,8 +207,6 @@ final class SubtitleHttp {
         boolean dropped = false;
         Throwable cause = failure;
         for (int depth = 0; cause != null && depth < 12; depth++, cause = cause.getCause()) {
-            if (cause instanceof SSLPeerUnverifiedException || cause instanceof CertificateException
-                    || cause instanceof CertPathValidatorException) return false;
             if (cause instanceof SocketException || cause instanceof EOFException) dropped = true;
             if (cause instanceof SSLException && cause.getMessage() != null) {
                 String message = cause.getMessage().toLowerCase(Locale.ROOT);

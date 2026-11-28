@@ -41,37 +41,65 @@ final class ImdbMovieFeed {
         }
     }
 
-    List<Movie> load(LocalDate today) throws IOException {
+    record Result(List<Movie> movies, boolean highRatedComplete) {}
+
+    Result load(LocalDate today) throws IOException {
         LocalDate from = today.minusDays(29);
         String search = "https://" + HOST + "/search/title/?title_type=feature&release_date="
                 + from + "," + today + "&count=" + MAX_MOVIES;
-        List<Movie> popular = fetch(search + "&sort=num_votes,desc", from, today);
+        List<Movie> popular = fetch("popular", search + "&sort=num_votes,desc", from, today);
         Map<String, Movie> movies = new LinkedHashMap<>();
         for (Movie movie : popular) movies.put(movie.imdbId(), movie);
         try {
-            List<Movie> rated = fetch(search + "&user_rating=" + HIGH_RATING + ",10&num_votes=10,&sort=user_rating,desc",
+            List<Movie> rated = fetch("high_rated",
+                    search + "&user_rating=" + HIGH_RATING + ",10&num_votes=10,&sort=user_rating,desc",
                     from, today);
             for (Movie movie : rated) movies.putIfAbsent(movie.imdbId(), movie);
         } catch (IOException failure) {
             ScrapeEngine.checkCancelled();
             if (movies.isEmpty()) throw failure;
-            DebugLog.failure("imdb-high-rated", failure);
+            return new Result(new ArrayList<>(movies.values()), false);
         }
-        return new ArrayList<>(movies.values());
+        return new Result(new ArrayList<>(movies.values()), true);
     }
 
-    private static List<Movie> fetch(String address, LocalDate from, LocalDate today) throws IOException {
-        String html;
+    private static List<Movie> fetch(String query, String address, LocalDate from, LocalDate today)
+            throws IOException {
+        String log = "host=" + HOST + " query=" + query;
+        byte[] page;
         try {
-            byte[] page = SubtitleHttp.get(address, "Accept-Language", "en-US,en", MAX_PAGE_BYTES, HOST);
-            html = new String(page, StandardCharsets.UTF_8);
+            page = SubtitleHttp.getOk(address, "Accept-Language", "en-US,en", MAX_PAGE_BYTES, HOST);
         } catch (SubtitleHttp.HttpException failure) {
-            throw new IOException("IMDb 搜索页返回 HTTP " + failure.statusCode);
+            DebugLog.event("imdb-feed", log + " result=http_status status=" + failure.statusCode);
+            String message = switch (failure.statusCode) {
+                case 202 -> "IMDb 返回 HTTP 202，未提供影片列表。";
+                case 403 -> "IMDb 拒绝访问搜索页（HTTP 403）。";
+                case 429 -> "IMDb 限制了请求频率（HTTP 429）。";
+                default -> "IMDb 搜索页返回 HTTP " + failure.statusCode + "。";
+            };
+            throw new IOException(message, failure);
         } catch (IOException failure) {
             ScrapeEngine.checkCancelled();
-            throw new IOException("无法连接 IMDb 搜索页，请检查网络后重试。", failure);
+            String reason = DebugLog.networkReason(failure);
+            DebugLog.event("imdb-feed", log + " result=request_failed reason=" + reason);
+            String message = switch (reason) {
+                case "dns_failure" -> "无法解析 IMDb 搜索页的域名。";
+                case "connection_reset" -> "IMDb 搜索页连接被重置。";
+                case "timeout" -> "连接 IMDb 搜索页超时。";
+                case "tls_peer_unverified" -> "IMDb 搜索页的 TLS 证书校验失败。";
+                default -> "读取 IMDb 搜索页时连接失败。";
+            };
+            throw new IOException(message, failure);
         }
-        return parse(html, from, today);
+        try {
+            List<Movie> movies = parse(new String(page, StandardCharsets.UTF_8), from, today);
+            DebugLog.event("imdb-feed", log + " result=parsed count=" + movies.size());
+            return movies;
+        } catch (IOException failure) {
+            ScrapeEngine.checkCancelled();
+            DebugLog.event("imdb-feed", log + " result=unrecognized_content status=200 bytes=" + page.length);
+            throw failure;
+        }
     }
 
     static List<Movie> parse(String html, LocalDate from, LocalDate through) throws IOException {
@@ -116,7 +144,7 @@ final class ImdbMovieFeed {
                 }
             }
         }
-        if (!recognized) throw new IOException("无法读取 IMDb 搜索结果，网页格式可能已更新。");
+        if (!recognized) throw new IOException("IMDb 返回的页面没有可识别的影片列表。");
         return new ArrayList<>(results.values());
     }
 

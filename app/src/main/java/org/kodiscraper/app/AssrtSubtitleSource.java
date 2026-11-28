@@ -344,7 +344,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
 
     record Diagnostic(String report, boolean reachable) {}
 
-    private record Route(String result, boolean reachable, boolean reset) {}
+    private record Route(String result, boolean reachable, boolean reset, boolean tokenChecked) {}
 
     Diagnostic diagnoseRoutes() throws IOException {
         String credential = TOKEN.matcher(token).matches() ? token : "";
@@ -355,9 +355,19 @@ final class AssrtSubtitleSource implements SubtitleSource {
         Route control = !credential.isEmpty() && primary.reset() ? probeHost(API_HOST, "", false) : null;
         Route backup = probeHost(BACKUP_API_HOST, credential, true);
         boolean reachable = primary.reachable() || backup.reachable() || (control != null && control.reachable());
-        DebugLog.event("assrt-probe", "result=" + (reachable ? "api_response" : "unreachable"));
-        String comparison = control == null ? "" : "\n" + control.result();
-        return new Diagnostic(heading + "\n" + primary.result() + comparison + "\n" + backup.result(), reachable);
+        boolean tokenChecked = primary.tokenChecked() || backup.tokenChecked();
+        DebugLog.event("assrt-probe", "result=" + (reachable ? "api_response" : "unreachable")
+                + " credential_check=" + (credential.isEmpty() ? "not_requested" : tokenChecked ? "completed" : "pending"));
+        StringBuilder report = new StringBuilder(heading).append('\n').append(primary.result());
+        if (control != null) report.append('\n').append(control.result());
+        report.append('\n').append(backup.result());
+        if (control != null && control.reset()) {
+            report.append("\n主线路的带 Token 请求和匿名对照均发生连接重置。");
+        } else if (control != null && control.reachable()) {
+            report.append("\n主线路匿名对照收到响应，带 Token 的请求未完成。");
+        }
+        if (!credential.isEmpty() && !tokenChecked) report.append("\n尚未获得 ASSRT 的 Token 校验结果。");
+        return new Diagnostic(report.toString(), reachable);
     }
 
     private Route probeHost(String host, String credential, boolean allowRetry) throws IOException {
@@ -367,6 +377,7 @@ final class AssrtSubtitleSource implements SubtitleSource {
         String result;
         boolean reachable;
         boolean reset = false;
+        boolean tokenChecked = false;
         try {
             JSONObject response = allowRetry ? requestPreferredApi(host, "user/quota", credential)
                     : requestApi(host, "user/quota", credential);
@@ -374,11 +385,13 @@ final class AssrtSubtitleSource implements SubtitleSource {
             if (status >= 0) markBackupReachable(host);
             result = probeResult(status, 200, credential);
             reachable = status >= 0;
+            tokenChecked = checkedCredential(status, 200, credential);
             DebugLog.event("assrt-probe", context + " http=200 api_status=" + status);
         } catch (SubtitleHttp.HttpException error) {
             if (!rememberBackupFailure(host, error) && error.apiStatus >= 0) markBackupReachable(host);
             result = probeResult(error.apiStatus, error.statusCode, credential);
             reachable = error.apiStatus >= 0 || error.statusCode == 401 || error.statusCode == 429;
+            tokenChecked = checkedCredential(error.apiStatus, error.statusCode, credential);
             DebugLog.event("assrt-probe", context + " http=" + error.statusCode + " api_status=" + error.apiStatus);
         } catch (IOException error) {
             checkRunning();
@@ -389,15 +402,21 @@ final class AssrtSubtitleSource implements SubtitleSource {
             reset = "connection_reset".equals(reason);
             DebugLog.event("assrt-probe", context + " result=" + reason);
         }
-        return new Route(label + " · " + result, reachable, reset);
+        return new Route(label + " · " + result, reachable, reset, tokenChecked);
+    }
+
+    private static boolean checkedCredential(int status, int httpStatus, String credential) {
+        return !credential.isEmpty() && ((status == 0 && httpStatus == 200) || status == 1 || status == 20001);
     }
 
     private static String probeResult(int status, int httpStatus, String credential) {
         String result;
-        if (status == 0) {
+        if (status == 0 && httpStatus == 200) {
             result = credential.isEmpty() ? "已连通" : "已连通，Token 有效";
-        } else if (credential.isEmpty() && (status == 20001 || httpStatus == 401)) {
+        } else if (credential.isEmpty() && status == 20001) {
             result = "已连通，等待填写 Token";
+        } else if (status < 0 && httpStatus == 401) {
+            result = "收到未经认证的 HTTP 响应";
         } else {
             result = apiErrorMessage(status, httpStatus);
         }

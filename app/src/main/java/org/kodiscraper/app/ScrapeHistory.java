@@ -18,7 +18,11 @@ final class ScrapeHistory {
     private final SharedPreferences preferences;
 
     ScrapeHistory(Context context) {
-        preferences = context.getSharedPreferences("scraper_history", Context.MODE_PRIVATE);
+        this(context, "scraper_history");
+    }
+
+    ScrapeHistory(Context context, String namespace) {
+        preferences = context.getSharedPreferences(namespace, Context.MODE_PRIVATE);
     }
 
     List<String> newestFirst() {

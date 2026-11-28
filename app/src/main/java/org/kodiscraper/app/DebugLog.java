@@ -13,6 +13,8 @@ import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.security.cert.CertPathValidatorException;
+import java.security.cert.CertificateException;
 import java.time.Instant;
 import java.util.Locale;
 import javax.net.ssl.SSLException;
@@ -81,11 +83,10 @@ final class DebugLog {
     }
 
     static String networkReason(Throwable problem) {
+        if (unverifiedPeer(problem)) return "tls_peer_unverified";
         String reason = "io_error";
         Throwable error = problem;
         for (int depth = 0; error != null && depth < 10; depth++, error = error.getCause()) {
-            if (error instanceof SSLPeerUnverifiedException
-                    || error instanceof java.security.cert.CertificateException) return "tls_peer_unverified";
             if (error instanceof UnknownHostException) return "dns_failure";
             if (error instanceof SocketTimeoutException) return "timeout";
             if (error instanceof EOFException) return "unexpected_eof";
@@ -100,6 +101,15 @@ final class DebugLog {
             }
         }
         return reason;
+    }
+
+    static boolean unverifiedPeer(Throwable problem) {
+        Throwable error = problem;
+        for (int depth = 0; error != null && depth < 12; depth++, error = error.getCause()) {
+            if (error instanceof SSLPeerUnverifiedException || error instanceof CertificateException
+                    || error instanceof CertPathValidatorException) return true;
+        }
+        return false;
     }
 
     static long elapsed(long started) {

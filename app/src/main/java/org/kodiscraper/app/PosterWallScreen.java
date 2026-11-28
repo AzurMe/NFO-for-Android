@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
@@ -79,7 +80,7 @@ final class PosterWallScreen implements AutoCloseable {
         genreScroll.setVisibility(View.GONE);
         genreScroll.setHorizontalScrollBarEnabled(false);
         genreChips = activity.horizontal();
-        genreChips.setPadding(activity.dp(14), activity.dp(8), activity.dp(14), activity.dp(5));
+        genreChips.setPadding(activity.dp(14), activity.dp(3), activity.dp(14), activity.dp(3));
         genreScroll.addView(genreChips);
         root.addView(genreScroll, new LinearLayout.LayoutParams(-1, -2));
         status = activity.text("", 13, appearance.muted, false);
@@ -200,6 +201,8 @@ final class PosterWallScreen implements AutoCloseable {
         chip.setMaxWidth(activity.dp(210));
         chip.setSingleLine(true);
         chip.setEllipsize(TextUtils.TruncateAt.END);
+        chip.setMinWidth(activity.dp(48));
+        chip.setMinHeight(activity.dp(48));
         chip.setTag(value);
         chip.setOnClickListener(view -> {
             if (value == MORE_GENRES) {
@@ -209,10 +212,25 @@ final class PosterWallScreen implements AutoCloseable {
             selectedGenre = (String) value;
             filter();
         });
-        chip.setMinHeight(activity.dp(48));
+        styleGenreChip(chip, false);
         LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-2, -2);
-        space.rightMargin = activity.dp(6);
+        space.setMarginEnd(activity.dp(4));
         genreChips.addView(chip, space);
+    }
+
+    private void styleGenreChip(Button chip, boolean active) {
+        int inactiveFill = appearance.dark ? appearance.surface : Color.TRANSPARENT;
+        int fill = active ? appearance.tint : inactiveFill;
+        StateListDrawable face = new StateListDrawable();
+        face.addState(new int[] {android.R.attr.state_focused}, activity.shape(fill, 10, appearance.accent));
+        face.addState(new int[0], activity.shape(fill, 10, 0));
+        RippleDrawable ripple = new RippleDrawable(ColorStateList.valueOf(appearance.ripple), face,
+                activity.shape(Color.WHITE, 10, 0));
+        int inset = activity.dp(8);
+        chip.setBackground(new InsetDrawable(ripple, 0, inset, 0, inset));
+        chip.setPaddingRelative(activity.dp(12), inset, activity.dp(12), inset);
+        chip.setTextColor(active ? appearance.accent : appearance.muted);
+        chip.setSelected(active);
     }
 
     private void showAllGenres() {
@@ -231,10 +249,7 @@ final class PosterWallScreen implements AutoCloseable {
             if (chip.getTag() == MORE_GENRES) continue;
             String value = (String) chip.getTag();
             boolean active = value == null ? selectedGenre == null : value.equalsIgnoreCase(selectedGenre);
-            chip.setSelected(active);
-            chip.setTextColor(active ? appearance.accent : appearance.muted);
-            chip.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
-                    activity.shape(active ? appearance.tint : appearance.surface, 12, appearance.border), null));
+            if (chip.isSelected() != active) styleGenreChip(chip, active);
         }
         List<ScrapeEngine.LibraryMovie> visible = new ArrayList<>();
         for (ScrapeEngine.LibraryMovie movie : library) {

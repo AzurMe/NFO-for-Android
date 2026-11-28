@@ -90,7 +90,6 @@ public final class MainActivity extends Activity {
     private Uri folder;
     private Uri collectionFolder;
     private SharedPreferences settings;
-    private ScrapeHistory history;
     private AppAppearance appearance;
     private AppAppearance.Mode appearanceMode;
     private List<MovieStorage.Movie> movies = Collections.emptyList();
@@ -102,7 +101,6 @@ public final class MainActivity extends Activity {
     private LinearLayout scraperColumn;
     private LinearLayout subtitleColumn;
     private ScrollView subtitleScroll;
-    private Button subtitleStop;
     private Button pickSubtitleFolder;
     private TextView subtitleFolder;
     private PosterWallScreen posterWall;
@@ -124,9 +122,9 @@ public final class MainActivity extends Activity {
     private TextView collectionFolderName;
     private TextView apiState;
     private TextView diagnosticReport;
-    private TextView runState;
-    private TextView log;
-    private ProgressBar progress;
+    private RunPanel scraperLog;
+    private RunPanel subtitleLog;
+    private RunPanel activeRunPanel;
     private Button pickFolder;
     private Button organizeMovies;
     private Button pickCollectionFolder;
@@ -146,7 +144,6 @@ public final class MainActivity extends Activity {
     private Switch alternateFanart;
     private Switch autoSubtitles;
     private Switch skipExistingSubtitles;
-    private LinearLayout logPanel;
     private String savedCredential = "";
     private String savedTvdbKey = "";
     private String savedTvdbPin = "";
@@ -182,8 +179,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.14.0 android_api=" + Build.VERSION.SDK_INT);
-        history = new ScrapeHistory(this);
+        DebugLog.event("app", "opened version=1.15.0 android_api=" + Build.VERSION.SDK_INT);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
@@ -212,7 +208,8 @@ public final class MainActivity extends Activity {
         configureWindow();
         buildScreen();
         if (retained != null) {
-            runState.setText(retained.runText());
+            scraperLog.state().setText(retained.scraperStatus());
+            subtitleLog.state().setText(retained.subtitleStatus());
             diagnosticReport.setText(retained.report());
             diagnosticReport.setVisibility(retained.reportVisible() ? View.VISIBLE : View.GONE);
             scroll.post(() -> scroll.scrollTo(0, retained.scraperScroll()));
@@ -223,7 +220,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        updateLog(history.currentTask());
+        updateLog(scraperLog, scraperLog.history().currentTask());
+        updateLog(subtitleLog, subtitleLog.history().currentTask());
         refreshPosters();
     }
 
@@ -234,14 +232,15 @@ public final class MainActivity extends Activity {
     @Override
     public Object onRetainNonConfigurationInstance() {
         MoviePushScreen.State pushState = moviePush == null ? retainedMoviePush : moviePush.saveState();
-        String status = busy ? "任务已中断" : runState.getText().toString();
+        String scraperStatus = busy && activeRunPanel == scraperLog ? "任务已中断" : scraperLog.state().getText().toString();
+        String subtitleStatus = busy && activeRunPanel == subtitleLog ? "任务已中断" : subtitleLog.state().getText().toString();
         return new RetainedUi(new HashSet<>(needsReview), new ArrayList<>(movies),
-                apiVerified, status, diagnosticReport.getText().toString(),
+                apiVerified, scraperStatus, subtitleStatus, diagnosticReport.getText().toString(),
                 diagnosticReport.getVisibility() == View.VISIBLE, scroll.getScrollY(), pushState);
     }
 
     private record RetainedUi(Set<String> needsReview, List<MovieStorage.Movie> movies,
-                              boolean apiVerified, String runText, String report, boolean reportVisible,
+                              boolean apiVerified, String scraperStatus, String subtitleStatus, String report, boolean reportVisible,
                               int scraperScroll, MoviePushScreen.State moviePush) {}
 
     private void configureWindow() {
@@ -297,24 +296,23 @@ public final class MainActivity extends Activity {
             return insets;
         });
         scraperColumn = scrollColumn(scroll);
-        addDirectory(scraperColumn);
-        addConnection(scraperColumn);
-        addOptions(scraperColumn);
-        addLog(scraperColumn);
-        addControls(scraperPage);
+        scraperLog = addLog(scraperColumn, "刮削记录", new ScrapeHistory(this));
+        LinearLayout scraperSettings = card(scraperColumn);
+        addDirectory(settingsSection(scraperSettings, false));
+        addConnection(settingsSection(scraperSettings, true));
+        addOptions(settingsSection(scraperSettings, true));
+        start = addPrimaryAction(scraperPage, "一键刮削", this::runBatch);
         subtitlePage = vertical();
         subtitlePage.addView(createToolbar(Page.SUBTITLES.label, null));
         subtitleScroll = new ScrollView(this);
         subtitlePage.addView(subtitleScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         subtitleColumn = scrollColumn(subtitleScroll);
-        addSubtitleDirectory(subtitleColumn);
-        addSubtitles(subtitleColumn);
-        subtitleStop = button("停止任务", appearance.tint, appearance.accent);
-        subtitleStop.setMinHeight(dp(48));
-        subtitleStop.setOnClickListener(view -> cancelWork());
-        LinearLayout.LayoutParams stopSpace = new LinearLayout.LayoutParams(-1, -2);
-        stopSpace.setMargins(dp(16), dp(6), dp(16), dp(12));
-        subtitlePage.addView(subtitleStop, stopSpace);
+        subtitleLog = addLog(subtitleColumn, "字幕下载记录", new ScrapeHistory(this, "subtitle_history"));
+        LinearLayout subtitleConfig = card(subtitleColumn);
+        addSubtitleDirectory(settingsSection(subtitleConfig, false));
+        addSubtitleSources(settingsSection(subtitleConfig, true));
+        addSubtitles(settingsSection(subtitleConfig, true));
+        subtitlesOnly = addPrimaryAction(subtitlePage, "一键下载字幕", this::runSubtitleBatch);
         pageHost.addView(subtitlePage, viewport());
         debugPage = buildDebugPage();
         pageHost.addView(debugPage, viewport());
@@ -348,7 +346,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.14.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.15.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -436,15 +434,17 @@ public final class MainActivity extends Activity {
         navigationPanel.setFillViewport(true);
         navigationPanel.setOverScrollMode(View.OVER_SCROLL_NEVER);
         navigationPanel.setVerticalScrollBarEnabled(false);
-        navigationPanel.setBackground(shape(appearance.surface, 24, appearance.border));
+        GradientDrawable drawerSurface = shape(appearance.surface, 0, 0);
+        float radius = dp(22);
+        drawerSurface.setCornerRadii(new float[]{0, 0, radius, radius, radius, radius, 0, 0});
+        navigationPanel.setBackground(drawerSurface);
         navigationPanel.setClipToOutline(true);
         navigationPanel.setElevation(dp(12));
         navigationPanel.setClickable(true);
         if (Build.VERSION.SDK_INT >= 28) {
             navigationPanel.setAccessibilityPaneTitle("导航菜单");
         }
-        FrameLayout.LayoutParams drawer = new FrameLayout.LayoutParams(dp(310), -1, Gravity.START);
-        drawer.setMargins(dp(10), dp(8), dp(10), dp(8));
+        FrameLayout.LayoutParams drawer = new FrameLayout.LayoutParams(dp(310), -1, Gravity.LEFT);
         navigationOverlay.addView(navigationPanel, drawer);
         LinearLayout content = vertical();
         content.setPadding(dp(16), dp(14), dp(16), dp(18));
@@ -538,8 +538,7 @@ public final class MainActivity extends Activity {
     }
 
     private float navigationOffset() {
-        int direction = navigationPanel.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL ? 1 : -1;
-        return direction * (navigationPanel.getLayoutParams().width + dp(16));
+        return -(navigationPanel.getLayoutParams().width + dp(16));
     }
 
     private void updateNavigationItem(Button item, boolean selected) {
@@ -601,11 +600,6 @@ public final class MainActivity extends Activity {
             if (view == null) continue;
             UiMotion.reset(view);
             view.setVisibility(entry == destination ? View.VISIBLE : View.GONE);
-        }
-        LinearLayout logHost = page == Page.SUBTITLES ? subtitleColumn : scraperColumn;
-        if ((page == Page.SCRAPER || page == Page.SUBTITLES) && logPanel.getParent() != logHost) {
-            ((ViewGroup) logPanel.getParent()).removeView(logPanel);
-            logHost.addView(logPanel);
         }
         closeNavigation(false);
         frame.requestFocus();
@@ -717,9 +711,8 @@ public final class MainActivity extends Activity {
         button.setCompoundDrawablePadding(dp(12));
     }
 
-    private void addDirectory(LinearLayout column) {
-        LinearLayout card = card(column);
-        add(card, text("电影搜索路径", 17, appearance.foreground, true), 0);
+    private void addDirectory(LinearLayout card) {
+        addSettingsHeading(card, "电影搜索路径");
         folderName = text("", 14, appearance.muted, false);
         folderName.setMaxLines(3);
         folderName.setTextIsSelectable(true);
@@ -738,10 +731,9 @@ public final class MainActivity extends Activity {
         add(card, actions, 11);
     }
 
-    private void addConnection(LinearLayout column) {
-        LinearLayout card = card(column);
+    private void addConnection(LinearLayout card) {
         LinearLayout selection = horizontal();
-        selection.addView(text("影片资料来源", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        selection.addView(settingsHeading("影片资料来源"), new LinearLayout.LayoutParams(0, -2, 1f));
         metadataSourceButton = button(metadataProvider.label, appearance.tint, appearance.accent);
         metadataSourceButton.setContentDescription("选择影片资料来源 · " + metadataProvider.label);
         metadataSourceButton.setMinHeight(dp(48));
@@ -760,11 +752,10 @@ public final class MainActivity extends Activity {
         testSpace.leftMargin = dp(8);
         tvdbButtons.addView(testTvdb, testSpace);
         add(tvdbOptions, tvdbButtons, 4);
-        add(tvdbOptions, text("电影推送继续使用下方的 TMDB 凭据。", 12, appearance.muted, false), 4);
         tvdbOptions.setVisibility(metadataProvider == MovieMetadataSource.Provider.TVDB ? View.VISIBLE : View.GONE);
         add(card, tvdbOptions, 0);
         LinearLayout heading = horizontal();
-        heading.addView(text("TMDB 连接", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
+        heading.addView(text("TMDB 连接", 14, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
         apiState = text("", 12, appearance.muted, true);
         heading.addView(apiState);
         add(card, heading, 12);
@@ -881,9 +872,8 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void addSubtitleDirectory(LinearLayout column) {
-        LinearLayout panel = card(column);
-        add(panel, text("电影目录", 17, appearance.foreground, true), 0);
+    private void addSubtitleDirectory(LinearLayout panel) {
+        addSettingsHeading(panel, "电影目录");
         subtitleFolder = text("", 13, appearance.muted, false);
         add(panel, subtitleFolder, 5);
         pickSubtitleFolder = button("设置搜索路径", appearance.tint, appearance.accent);
@@ -892,29 +882,31 @@ public final class MainActivity extends Activity {
         add(panel, pickSubtitleFolder, 8);
     }
 
-    private void addSubtitles(LinearLayout column) {
-        LinearLayout card = card(column);
-        add(card, text("中文字幕", 17, appearance.foreground, true), 0);
+    private void addSubtitles(LinearLayout card) {
+        addSettingsHeading(card, "下载设置");
         autoSubtitles = option("随一键刮削和手动匹配下载", settings.getBoolean("auto_subtitles", false));
         add(card, autoSubtitles, 4);
         skipExistingSubtitles = option("跳过已有外挂字幕的电影", settings.getBoolean("skip_existing_subtitles", true));
         skipExistingSubtitles.setOnCheckedChangeListener((view, enabled) ->
                 settings.edit().putBoolean("skip_existing_subtitles", enabled).apply());
         add(card, skipExistingSubtitles, 0);
-        add(card, text("字幕保存到影片的 Subs 文件夹。射手影音无需密钥。", 13, appearance.muted, false), 0);
+        add(card, text("字幕保存到影片的 Subs 文件夹。", 13, appearance.muted, false), 2);
+    }
+
+    private void addSubtitleSources(LinearLayout card) {
+        addSettingsHeading(card, "字幕来源");
         LinearLayout buttons = horizontal();
         subtitleSettings = button("设置字幕来源", appearance.tint, appearance.accent);
         subtitleSettings.setOnClickListener(view -> showSubtitleSettings());
-        buttons.addView(subtitleSettings, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        subtitlesOnly = button("仅下载字幕", appearance.tint, appearance.accent);
-        subtitlesOnly.setOnClickListener(view -> runSubtitleBatch());
-        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(0, dp(44), 1f);
-        placement.leftMargin = dp(8);
-        buttons.addView(subtitlesOnly, placement);
-        add(card, buttons, 9);
+        subtitleSettings.setMinHeight(dp(48));
+        buttons.addView(subtitleSettings, new LinearLayout.LayoutParams(0, -2, 1f));
         testAssrt = button("测试伪射手连接", appearance.tint, appearance.accent);
+        testAssrt.setMinHeight(dp(48));
         testAssrt.setOnClickListener(view -> validateAssrt());
-        add(card, testAssrt, 8);
+        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(0, -2, 1f);
+        placement.leftMargin = dp(8);
+        buttons.addView(testAssrt, placement);
+        add(card, buttons, 9);
     }
 
     private void showSubtitleSettings() {
@@ -962,9 +954,8 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void addOptions(LinearLayout column) {
-        LinearLayout card = card(column);
-        add(card, text("刮削设置", 17, appearance.foreground, true), 0);
+    private void addOptions(LinearLayout card) {
+        addSettingsHeading(card, "刮削设置");
         LinearLayout row = horizontal();
         row.addView(text("资料语言", 14, appearance.foreground, false), new LinearLayout.LayoutParams(0, -2, 1f));
         language = new Spinner(this, Spinner.MODE_DROPDOWN);
@@ -991,8 +982,10 @@ public final class MainActivity extends Activity {
         overwrite = option("更新待刮削影片的已有资料", settings.getBoolean("overwrite", false));
         add(card, overwrite, 0);
         add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, appearance.muted, false), 2);
-        add(card, text("一键刮削会先检查全部电影，资料齐全的影片仍可按设置补字幕。",
-                12, appearance.muted, false), 2);
+        manual = button("手动匹配影片", appearance.tint, appearance.accent);
+        manual.setMinHeight(dp(48));
+        manual.setOnClickListener(view -> openManual());
+        add(card, manual, 10);
 
         add(card, text("Kodi 合集资料目录", 14, appearance.foreground, true), 12);
         collectionFolderName = text("", 13, appearance.muted, false);
@@ -1011,46 +1004,35 @@ public final class MainActivity extends Activity {
         add(card, folderButtons, 8);
     }
 
-    private void addControls(LinearLayout stack) {
-        LinearLayout actions = horizontal();
-        actions.setBackground(shape(appearance.surface, 22, appearance.border));
-        actions.setPadding(dp(8), dp(8), dp(8), dp(8));
-        LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, -2);
-        actionSpace.setMargins(dp(16), dp(4), dp(16), dp(12));
-        stack.addView(actions, actionSpace);
-        manual = button("手动匹配影片", appearance.tint, appearance.accent);
-        manual.setMinHeight(dp(52));
-        manual.setOnClickListener(view -> openManual());
-        actions.addView(manual, new LinearLayout.LayoutParams(0, -2, 1f));
-        start = button("一键刮削", appearance.primary, appearance.onPrimary);
-        start.setTextSize(16);
-        start.setMinHeight(dp(52));
-        start.setOnClickListener(view -> {
-            if (busy) {
-                cancelWork();
-            } else {
-                runBatch();
-            }
+    private Button addPrimaryAction(LinearLayout stack, String label, Runnable launch) {
+        Button action = button(label, appearance.primary, appearance.onPrimary);
+        action.setTextSize(16);
+        action.setMinHeight(dp(52));
+        action.setOnClickListener(view -> {
+            if (busy) cancelWork();
+            else launch.run();
         });
-        LinearLayout.LayoutParams primarySpace = new LinearLayout.LayoutParams(0, -2, 1.25f);
-        primarySpace.leftMargin = dp(10);
-        actions.addView(start, primarySpace);
+        LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, -2);
+        actionSpace.setMargins(dp(16), dp(6), dp(16), dp(12));
+        stack.addView(action, actionSpace);
+        return action;
     }
 
-    private void addLog(LinearLayout column) {
+    private record RunPanel(ScrapeHistory history, TextView state, ProgressBar progress, ScrollView viewer, TextView entries) {}
+
+    private RunPanel addLog(LinearLayout column, String title, ScrapeHistory history) {
         LinearLayout card = card(column);
-        logPanel = card;
         LinearLayout header = horizontal();
-        header.addView(text("刮削记录", 17, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1));
+        header.addView(settingsHeading(title), new LinearLayout.LayoutParams(0, -2, 1));
         Button previous = button("历史日志", appearance.tint, appearance.accent);
         previous.setMinHeight(dp(48));
-        previous.setOnClickListener(view -> showHistory());
+        previous.setOnClickListener(view -> showHistory(history));
         header.addView(previous);
         add(card, header, 0);
-        runState = text("等待开始", 14, appearance.muted, true);
+        TextView runState = text("等待开始", 14, appearance.muted, true);
         runState.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         add(card, runState, 7);
-        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setProgressTintList(ColorStateList.valueOf(appearance.accent));
         progress.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
         progress.setMax(100);
@@ -1058,14 +1040,28 @@ public final class MainActivity extends Activity {
         bar.topMargin = dp(6);
         card.addView(progress, bar);
         progress.setVisibility(View.GONE);
-        log = text("", 13, appearance.foreground, false);
+        TextView log = text("", 13, appearance.foreground, false);
         log.setTextIsSelectable(true);
-        log.setLineSpacing(dp(4), 1f);
-        add(card, log, 7);
-        log.setVisibility(View.GONE);
+        log.setLineSpacing(dp(3), 1f);
+        ScrollView viewer = new ScrollView(this) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                int limit = dp(144);
+                if (MeasureSpec.getMode(heightSpec) == MeasureSpec.UNSPECIFIED
+                        || MeasureSpec.getSize(heightSpec) > limit) {
+                    heightSpec = MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST);
+                }
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        };
+        viewer.setNestedScrollingEnabled(true);
+        viewer.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        viewer.addView(log, new ScrollView.LayoutParams(-1, -2));
+        viewer.setVisibility(View.GONE);
+        add(card, viewer, 7);
+        return new RunPanel(history, runState, progress, viewer, log);
     }
 
-    private void showHistory() {
+    private void showHistory(ScrapeHistory history) {
         List<String> entries = history.newestFirst();
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("历史日志")
                 .setPositiveButton("关闭", null);
@@ -1096,7 +1092,7 @@ public final class MainActivity extends Activity {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             MovieOrganizer.Plan plan = MovieOrganizer.preview(storage, byFolder);
             return () -> {
-                runState.setText(plan.items().isEmpty() ? "没有可重命名的影片" : "重命名方案待确认");
+                currentRunPanel().state().setText(plan.items().isEmpty() ? "没有可重命名的影片" : "重命名方案待确认");
                 showScraperDialog(() -> showOrganizationPreview(selected, plan));
             };
         });
@@ -1135,8 +1131,8 @@ public final class MainActivity extends Activity {
         preview.addView(content, new ScrollView.LayoutParams(-1, -2));
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("重命名预览").setView(preview);
         if (hasChanges) {
-            dialog.setNegativeButton("取消", (view, which) -> runState.setText("已取消重命名"));
-            dialog.setOnCancelListener(view -> runState.setText("已取消重命名"));
+            dialog.setNegativeButton("取消", (view, which) -> currentRunPanel().state().setText("已取消重命名"));
+            dialog.setOnCancelListener(view -> currentRunPanel().state().setText("已取消重命名"));
             dialog.setPositiveButton("确认重命名", (view, which) -> applyMovieOrganization(selected, plan));
         } else {
             dialog.setNegativeButton("关闭", null);
@@ -1282,7 +1278,7 @@ public final class MainActivity extends Activity {
                         + "\n\n凭据校验\n" + probeText(result.credentials, false));
                 String summary = "TMDB API" + (apiReachable ? "已连通" : "未确认连通") + "，图片服务器"
                         + (imagesReachable ? "已连通。" : "未确认连通。");
-                runState.setText("TMDB 连接检测完成");
+                currentRunPanel().state().setText("TMDB 连接检测完成");
                 note(summary);
                 updateUi();
             };
@@ -1294,7 +1290,7 @@ public final class MainActivity extends Activity {
         begin(null, "正在检测伪射手连接…", () -> {
             AssrtSubtitleSource.Diagnostic diagnostic = source.diagnoseRoutes();
             return () -> {
-                runState.setText(diagnostic.reachable() ? "伪射手 API 已响应" : "伪射手两条线路均未连通");
+                currentRunPanel().state().setText(diagnostic.reachable() ? "伪射手 API 已响应" : "未收到可识别的伪射手 API 响应");
                 note(diagnostic.report());
             };
         });
@@ -1374,8 +1370,8 @@ public final class MainActivity extends Activity {
             post(() -> {
                 note("本地检查完成 · 资料齐全 " + complete.size() + " 部 · 待刮削 " + pending.size() + " 部");
                 if (!stopped && !pending.isEmpty()) {
-                    runState.setText("正在连接 " + client.provider().label + "…");
-                    progress.setIndeterminate(true);
+                    currentRunPanel().state().setText("正在连接 " + client.provider().label + "…");
+                    currentRunPanel().progress().setIndeterminate(true);
                 }
             });
             if (!pending.isEmpty()) {
@@ -1638,9 +1634,9 @@ public final class MainActivity extends Activity {
             return () -> {
                 movies = scanned;
                 if (movies.isEmpty()) {
-                    runState.setText("没有发现可匹配的电影文件");
+                    currentRunPanel().state().setText("没有发现可匹配的电影文件");
                 } else {
-                    runState.setText("已发现 " + movies.size() + " 部影片");
+                    currentRunPanel().state().setText("已发现 " + movies.size() + " 部影片");
                     showScraperDialog(this::showMovieList);
                 }
             };
@@ -1763,7 +1759,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCandidates(MovieStorage.Movie movie, String query, int year, List<TmdbClient.Candidate> matches) {
-        runState.setText(matches.isEmpty() ? "未找到匹配的影片" : "找到 " + matches.size() + " 个候选");
+        currentRunPanel().state().setText(matches.isEmpty() ? "未找到匹配的影片" : "找到 " + matches.size() + " 个候选");
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("选择匹配结果")
                 .setNegativeButton("取消", null)
                 .setNeutralButton("修改搜索", (d, which) -> showQuery(movie, query, year));
@@ -1790,7 +1786,7 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmManual(MovieStorage.Movie movie, int id, String label, String overview) {
-        runState.setText("待确认匹配");
+        currentRunPanel().state().setText("待确认匹配");
         String shortened = overview == null || overview.isEmpty() ? ""
                 : "\n\n" + (overview.length() <= 270 ? overview : overview.substring(0, 270) + "…");
         String message = label + shortened + "\n\n将更新所选影片的资料和图片，并保留旧 NFO 中的观看记录、续播点和个人评分。";
@@ -1840,7 +1836,7 @@ public final class MainActivity extends Activity {
             return () -> {
                 needsReview.remove(movie.relativePath);
                 if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
-                runState.setText(resultLabel(result));
+                currentRunPanel().state().setText(resultLabel(result));
                 if (subtitles != null) {
                     note(batch.summary());
                 }
@@ -1897,7 +1893,7 @@ public final class MainActivity extends Activity {
         if (!value.equals(savedCredential)) {
             if (CredentialStore.save(settings, "tmdb", value)) {
                 savedCredential = value;
-            } else if (log != null) {
+            } else if (scraperLog != null) {
                 note("设备无法保存凭据，本次仍可使用。");
             }
         }
@@ -1945,6 +1941,8 @@ public final class MainActivity extends Activity {
         if (busy) {
             return;
         }
+        RunPanel taskPanel = currentRunPanel();
+        activeRunPanel = taskPanel;
         busy = true;
         stopped = false;
         long started = System.nanoTime();
@@ -1953,15 +1951,18 @@ public final class MainActivity extends Activity {
         activeClient = client;
         dismissKeyboard();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        runState.setText(status);
+        currentRunPanel().state().setText(status);
         String firstEntry = "[" + LocalDateTime.now().format(LOG_TIME) + "] " + status;
-        updateLog(history.append(redactLogText(firstEntry), true));
-        progress.setVisibility(View.VISIBLE);
-        progress.setIndeterminate(true);
+        updateLog(taskPanel, taskPanel.history().append(redactLogText(firstEntry), true));
+        currentRunPanel().progress().setVisibility(View.VISIBLE);
+        currentRunPanel().progress().setIndeterminate(true);
         updateUi();
         if (!diagnostic) {
             ScrollView taskScroll = page == Page.SUBTITLES ? subtitleScroll : scroll;
-            taskScroll.post(() -> taskScroll.smoothScrollTo(0, Math.max(0, logPanel.getTop() - dp(8))));
+            taskScroll.post(() -> {
+                if (UiMotion.enabled()) taskScroll.smoothScrollTo(0, 0);
+                else taskScroll.scrollTo(0, 0);
+            });
         }
         worker = new Thread(() -> {
             Runnable completed = null;
@@ -1985,29 +1986,33 @@ public final class MainActivity extends Activity {
                         + " duration_ms=" + DebugLog.elapsed(started));
                 if (posterRefreshPending) refreshPosters();
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                progress.setVisibility(View.GONE);
+                currentRunPanel().progress().setVisibility(View.GONE);
                 updateUi();
-                if (stopped) {
-                    runState.setText("已停止");
-                    if (diagnostic) {
-                        diagnosticReport.setText("连接检测已停止");
-                        note("连接检测已停止");
-                    } else {
-                        note("任务已停止。已写入的资料可以继续使用。");
+                try {
+                    if (stopped) {
+                        currentRunPanel().state().setText("已停止");
+                        if (diagnostic) {
+                            diagnosticReport.setText("连接检测已停止");
+                            note("连接检测已停止");
+                        } else {
+                            note("任务已停止。已写入的资料可以继续使用。");
+                        }
+                    } else if (failure != null) {
+                        currentRunPanel().state().setText("操作失败");
+                        note(errorText(failure));
+                        if (diagnostic) {
+                            diagnosticReport.setText(redactLogText(errorText(failure)));
+                        }
+                        if (failure instanceof TmdbClient.HttpException
+                                && ((TmdbClient.HttpException) failure).statusCode == 401) {
+                            apiVerified = false;
+                            updateUi();
+                        }
+                    } else if (onComplete != null) {
+                        onComplete.run();
                     }
-                } else if (failure != null) {
-                    runState.setText("操作失败");
-                    note(errorText(failure));
-                    if (diagnostic) {
-                        diagnosticReport.setText(redactLogText(errorText(failure)));
-                    }
-                    if (failure instanceof TmdbClient.HttpException
-                            && ((TmdbClient.HttpException) failure).statusCode == 401) {
-                        apiVerified = false;
-                        updateUi();
-                    }
-                } else if (onComplete != null) {
-                    onComplete.run();
+                } finally {
+                    activeRunPanel = null;
                 }
             });
         }, "MovieScraper");
@@ -2017,7 +2022,7 @@ public final class MainActivity extends Activity {
     private void cancelWork() {
         stopped = true;
         DebugLog.event("task", "stop requested");
-        runState.setText("正在停止…");
+        currentRunPanel().state().setText("正在停止…");
         updateUi();
         Thread running = worker;
         if (running != null) {
@@ -2061,10 +2066,10 @@ public final class MainActivity extends Activity {
         if (stopped) {
             return;
         }
-        progress.setIndeterminate(false);
-        progress.setMax(total);
-        progress.setProgress(index - 1);
-        runState.setText(index + " / " + total + " · " + title);
+        currentRunPanel().progress().setIndeterminate(false);
+        currentRunPanel().progress().setMax(total);
+        currentRunPanel().progress().setProgress(index - 1);
+        currentRunPanel().state().setText(index + " / " + total + " · " + title);
         DebugLog.event("progress", "position=" + index + " total=" + total);
     }
 
@@ -2074,8 +2079,6 @@ public final class MainActivity extends Activity {
         }
         pickFolder.setEnabled(!busy);
         pickSubtitleFolder.setEnabled(!busy);
-        subtitleStop.setVisibility(busy ? View.VISIBLE : View.GONE);
-        subtitleStop.setEnabled(busy && !stopped);
         organizeMovies.setEnabled(!busy);
         validate.setEnabled(!busy);
         metadataSourceButton.setEnabled(!busy);
@@ -2083,7 +2086,6 @@ public final class MainActivity extends Activity {
         credential.setEnabled(!busy);
         showCredential.setEnabled(!busy);
         subtitleSettings.setEnabled(!busy);
-        subtitlesOnly.setEnabled(!busy);
         testAssrt.setEnabled(!busy);
         autoSubtitles.setEnabled(!busy);
         skipExistingSubtitles.setEnabled(!busy);
@@ -2094,8 +2096,8 @@ public final class MainActivity extends Activity {
         overwrite.setEnabled(!busy);
         preferFolder.setEnabled(!busy);
         language.setEnabled(!busy);
-        start.setEnabled(!busy || !stopped);
-        start.setText(!busy ? "一键刮削" : stopped ? "正在停止…" : "停止任务");
+        updatePrimaryAction(start, "一键刮削");
+        updatePrimaryAction(subtitlesOnly, "一键下载字幕");
         manual.setText(needsReview.isEmpty() ? "手动匹配影片" : "手动匹配 · " + needsReview.size());
         manual.setContentDescription(needsReview.isEmpty() ? "手动匹配影片"
                 : "手动匹配影片 · " + needsReview.size() + " 部待确认");
@@ -2103,8 +2105,18 @@ public final class MainActivity extends Activity {
         apiState.setTextColor(apiVerified ? appearance.accent : appearance.muted);
     }
 
+    private void updatePrimaryAction(Button action, String label) {
+        action.setEnabled(!busy || !stopped);
+        action.setText(!busy ? label : stopped ? "正在停止…" : "停止任务");
+    }
+
+    private RunPanel currentRunPanel() {
+        return activeRunPanel != null ? activeRunPanel : page == Page.SUBTITLES ? subtitleLog : scraperLog;
+    }
+
     private void note(String message) {
-        updateLog(history.append(redactLogText(message), false));
+        RunPanel panel = currentRunPanel();
+        updateLog(panel, panel.history().append(redactLogText(message), false));
     }
 
     private String redactLogText(String message) {
@@ -2123,15 +2135,19 @@ public final class MainActivity extends Activity {
     }
 
     private void finishWithLog(String summary) {
-        runState.setText(summary);
+        currentRunPanel().state().setText(summary);
         note(summary);
     }
 
-    private void updateLog(List<String> entries) {
+    private void updateLog(RunPanel panel, List<String> entries) {
+        boolean follow = !panel.viewer().canScrollVertically(1);
         List<String> chronological = new ArrayList<>(entries);
         Collections.reverse(chronological);
-        log.setText(String.join("\n", chronological));
-        log.setVisibility(entries.isEmpty() ? View.GONE : View.VISIBLE);
+        panel.entries().setText(String.join("\n", chronological));
+        panel.viewer().setVisibility(entries.isEmpty() ? View.GONE : View.VISIBLE);
+        if (follow && !entries.isEmpty()) {
+            panel.viewer().post(() -> panel.viewer().scrollTo(0, panel.entries().getHeight()));
+        }
     }
 
     private void dismissKeyboard() {
@@ -2142,7 +2158,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.14.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.15.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -2257,6 +2273,29 @@ public final class MainActivity extends Activity {
         panel.setBackground(shape(appearance.surface, 22, appearance.border));
         add(column, panel, 12);
         return panel;
+    }
+
+    private LinearLayout settingsSection(LinearLayout settingsCard, boolean separated) {
+        if (separated) {
+            View rule = new View(this);
+            rule.setBackgroundColor(appearance.border);
+            LinearLayout.LayoutParams margin = new LinearLayout.LayoutParams(-1, dp(1));
+            margin.setMargins(0, dp(17), 0, dp(16));
+            settingsCard.addView(rule, margin);
+        }
+        LinearLayout section = vertical();
+        add(settingsCard, section, 0);
+        return section;
+    }
+
+    private TextView settingsHeading(String label) {
+        TextView heading = text(label, 16, appearance.foreground, true);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        return heading;
+    }
+
+    private void addSettingsHeading(LinearLayout section, String label) {
+        add(section, settingsHeading(label), 0);
     }
 
     private LinearLayout dialogContent() {
