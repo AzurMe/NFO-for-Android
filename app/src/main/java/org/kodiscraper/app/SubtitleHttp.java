@@ -107,6 +107,7 @@ final class SubtitleHttp {
                 throw new IOException("字幕下载地址超出来源允许范围");
             }
             HttpURLConnection connection = null;
+            long started = System.nanoTime();
             try {
                 connection = (HttpURLConnection) target.toURL().openConnection();
                 synchronized (ACTIVE) {
@@ -116,7 +117,7 @@ final class SubtitleHttp {
                 connection.setConnectTimeout(connectTimeoutMillis);
                 connection.setReadTimeout(readTimeoutMillis);
                 connection.setInstanceFollowRedirects(false);
-                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.9.1");
+                connection.setRequestProperty("User-Agent", "NFOForAndroid/1.10.0");
                 if (fresh) {
                     connection.setUseCaches(false);
                     connection.setRequestProperty("Connection", "close");
@@ -135,6 +136,7 @@ final class SubtitleHttp {
                     }
                 }
                 int code = connection.getResponseCode();
+                DebugLog.http(target.getHost(), code, started);
                 if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
                     String redirect = connection.getHeaderField("Location");
                     if (redirect == null || form != null) {
@@ -157,21 +159,28 @@ final class SubtitleHttp {
                     return read(input, limit);
                 }
             } catch (SocketTimeoutException failure) {
+                DebugLog.failure("http:" + target.getHost(), failure);
                 ScrapeEngine.checkCancelled();
                 throw new ConnectionException("字幕连接超时", failure);
             } catch (UnknownHostException failure) {
+                DebugLog.failure("http:" + target.getHost(), failure);
                 ScrapeEngine.checkCancelled();
                 throw new ConnectionException("无法解析字幕服务器地址", failure);
             } catch (SocketException | EOFException failure) {
+                DebugLog.failure("http:" + target.getHost(), failure);
                 ScrapeEngine.checkCancelled();
                 throw new ConnectionException(failure instanceof ConnectException
                         ? "无法建立字幕连接" : "字幕连接被重置或提前断开", failure);
             } catch (SSLException failure) {
+                DebugLog.failure("http:" + target.getHost(), failure);
                 ScrapeEngine.checkCancelled();
                 if (fresh && tlsConnectionDropped(failure)) {
                     throw new ConnectionException("字幕 HTTPS 连接被重置或提前断开", failure);
                 }
                 throw new IOException("字幕服务器的 HTTPS 连接失败", failure);
+            } catch (IOException failure) {
+                DebugLog.failure("http:" + target.getHost(), failure);
+                throw failure;
             } finally {
                 synchronized (ACTIVE) {
                     ACTIVE.remove(worker);

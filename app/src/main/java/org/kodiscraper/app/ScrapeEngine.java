@@ -2,6 +2,7 @@ package org.kodiscraper.app;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.util.Xml;
 
 import org.json.JSONArray;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -82,9 +84,32 @@ final class ScrapeEngine {
     }
 
     private boolean readableArtwork(MovieStorage.Movie movie, String type) throws IOException {
-        String name = findArtwork(movie, type, movie.singleMovieInDirectory);
+        return localArtwork(storage, movie, type) != null;
+    }
+
+    record LibraryMovie(String title, int year, List<String> tags, Uri poster) {}
+
+    static LibraryMovie libraryMovie(MovieStorage storage, MovieStorage.Movie movie) throws IOException {
+        try {
+            List<NfoSidecar> sidecars = readSidecars(storage, movie);
+            if (!completeNfo(sidecars)) return null;
+            MovieStorage.Entry poster = localArtwork(storage, movie, "poster");
+            if (poster == null || localArtwork(storage, movie, "fanart") == null) return null;
+            Identifiers nfo = sidecars.get(0).ids;
+            return new LibraryMovie(nfo.title, nfo.year > 0 ? nfo.year : movie.year,
+                    new ArrayList<>(nfo.tags), poster.uri);
+        } catch (IOException unreadable) {
+            checkCancelled();
+            DebugLog.failure("library-entry", unreadable);
+            return null;
+        }
+    }
+
+    private static MovieStorage.Entry localArtwork(MovieStorage storage, MovieStorage.Movie movie, String type)
+            throws IOException {
+        String name = findArtwork(storage, movie, type, movie.singleMovieInDirectory);
         MovieStorage.Entry entry = name == null ? null : storage.find(movie.directory, name);
-        return entry != null && storage.hasImageDimensions(entry);
+        return entry != null && storage.hasImageDimensions(entry) ? entry : null;
     }
 
     private static boolean completeNfo(List<NfoSidecar> sidecars) {
@@ -488,6 +513,11 @@ final class ScrapeEngine {
     }
 
     private String findArtwork(MovieStorage.Movie movie, String type, boolean allowFolderName) throws IOException {
+        return findArtwork(storage, movie, type, allowFolderName);
+    }
+
+    private static String findArtwork(MovieStorage storage, MovieStorage.Movie movie, String type,
+                                      boolean allowFolderName) throws IOException {
         String named = movie.artworkName(type, "jpg");
         String image = findImage(storage, movie.directory, named.substring(0, named.length() - 4));
         if (image == null && allowFolderName) {
@@ -626,7 +656,6 @@ final class ScrapeEngine {
     private static Identifiers readIds(byte[] bytes) throws IOException {
         Identifiers ids = new Identifiers();
         boolean movieRoot = false;
-        boolean titled = false;
         boolean closed = false;
         try {
             XmlPullParser parser = Xml.newPullParser();
@@ -650,7 +679,17 @@ final class ScrapeEngine {
                 }
                 String tag = parser.getName();
                 if (tag.equals("title")) {
-                    titled |= !parser.nextText().trim().isEmpty();
+                    String title = parser.nextText().trim();
+                    if (!title.isEmpty()) ids.title = title;
+                } else if (tag.equals("genre") || tag.equals("tag")) {
+                    String value = parser.nextText().trim();
+                    if (!value.isEmpty() && value.length() <= 80 && ids.tags.size() < 128) ids.tags.add(value);
+                } else if (tag.equals("year") || tag.equals("premiered")) {
+                    String value = parser.nextText().trim();
+                    if (tag.equals("year") || (ids.year == 0 && value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}"))) {
+                        int year = parseId(value.length() == 10 ? value.substring(0, 4) : value);
+                        if (year >= 1870 && year <= 2100) ids.year = year;
+                    }
                 } else if (tag.equals("uniqueid")) {
                     String type = parser.getAttributeValue(null, "type");
                     String value = parser.nextText().trim();
@@ -679,7 +718,7 @@ final class ScrapeEngine {
             if (!closed || !safeMovieNfo(bytes)) return new Identifiers();
         }
         ids.validMovie = movieRoot && closed;
-        ids.fullMovie = ids.validMovie && titled;
+        ids.fullMovie = ids.validMovie && !ids.title.isEmpty();
         return ids;
     }
 
@@ -733,6 +772,9 @@ final class ScrapeEngine {
     }
 
     private static final class Identifiers {
+        String title = "";
+        int year;
+        final Set<String> tags = new LinkedHashSet<>();
         int tmdbId;
         int tvdbId;
         String imdbId;

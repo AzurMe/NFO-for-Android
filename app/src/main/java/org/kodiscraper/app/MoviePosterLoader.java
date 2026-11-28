@@ -1,5 +1,6 @@
 package org.kodiscraper.app;
 
+import android.content.ContentResolver;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Rect;
@@ -7,10 +8,12 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.net.Uri;
 import android.util.LruCache;
 import android.widget.ImageView;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.util.HashSet;
 import java.util.Map;
@@ -47,11 +50,27 @@ final class MoviePosterLoader implements AutoCloseable {
     private long nextSequence;
     private long failureGeneration;
     private volatile boolean closed;
+    private final ContentResolver resolver;
+
+    MoviePosterLoader() {
+        this(null);
+    }
+
+    MoviePosterLoader(ContentResolver resolver) {
+        this.resolver = resolver;
+    }
 
     // These methods manage ImageView bindings on the main thread.
     void bind(ImageView view, String posterPath) {
+        bindUrl(view, TmdbClient.moviePosterUrl(posterPath));
+    }
+
+    void bindLocal(ImageView view, Uri image) {
+        bindUrl(view, image == null ? "" : image.toString());
+    }
+
+    private void bindUrl(ImageView view, String url) {
         if (closed) return;
-        String url = TmdbClient.moviePosterUrl(posterPath);
         Binding binding = bindings.get(view);
         if (binding != null && !binding.url.equals(url)) {
             if (alreadyDisplayed(view, binding)) view.setImageDrawable(null);
@@ -138,8 +157,12 @@ final class MoviePosterLoader implements AutoCloseable {
         Bitmap bitmap = null;
         try {
             if (!closed) {
-                byte[] bytes = SubtitleHttp.get(url, null, null, MAX_DOWNLOAD_BYTES, IMAGE_HOST);
-                bitmap = decode(bytes);
+                if (resolver == null) {
+                    byte[] bytes = SubtitleHttp.get(url, null, null, MAX_DOWNLOAD_BYTES, IMAGE_HOST);
+                    bitmap = decode(bytes);
+                } else {
+                    bitmap = decodeLocal(Uri.parse(url));
+                }
             }
         } catch (IOException | RuntimeException | OutOfMemoryError ignored) {
             // Missing and unreadable posters keep their placeholders until the next refresh.
@@ -175,6 +198,28 @@ final class MoviePosterLoader implements AutoCloseable {
             return null;
         }
 
+        sample(options);
+        return validateBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options));
+    }
+
+    private Bitmap decodeLocal(Uri image) throws IOException {
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        try (InputStream in = resolver.openInputStream(image)) {
+            if (in == null) return null;
+            BitmapFactory.decodeStream(in, null, options);
+        }
+        if (options.outWidth <= 0 || options.outHeight <= 0
+                || Math.max(options.outWidth, options.outHeight) > 16384) return null;
+        sample(options);
+        try (InputStream in = resolver.openInputStream(image)) {
+            return in == null ? null : validateBitmap(BitmapFactory.decodeStream(in, null, options));
+        }
+    }
+
+    private static void sample(BitmapFactory.Options options) {
+        int width = options.outWidth;
+        int height = options.outHeight;
         int sample = 1;
         while (exceedsBitmapLimit(roundedDimension(width, sample), roundedDimension(height, sample))) {
             sample *= 2;
@@ -182,7 +227,9 @@ final class MoviePosterLoader implements AutoCloseable {
         options.inJustDecodeBounds = false;
         options.inSampleSize = sample;
         options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, options);
+    }
+
+    private static Bitmap validateBitmap(Bitmap bitmap) {
         if (bitmap != null && exceedsBitmapLimit(bitmap.getWidth(), bitmap.getHeight())) {
             bitmap.recycle();
             return null;

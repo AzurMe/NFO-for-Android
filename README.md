@@ -6,6 +6,12 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 在侧边栏选择 **外观**，可跟随系统或手动切换浅色与深色。浅色使用浅蓝和白色，深色使用黑色和灰色。
 
+## 电影海报墙
+
+首页从授权目录读取本地影片资料，按每行两张海报竖向排列。它显示已有有效电影 NFO、海报和背景图的影片。顶部可横向滑动标签栏，按 NFO 中的标签或类型筛选。应用打开、刮削或重命名后会刷新，也可以点 **刷新** 手动更新。
+
+从侧边栏切换 **电影刮削器**、**字幕下载器** 和 **电影推送**。刮削和字幕下载共用同一个已授权目录。
+
 ## 电影推送
 
 1. 点顶部菜单按钮，打开侧边栏，切换到 **电影推送**。应用沿用已配置的 TMDB 凭据取得近 30 天影片及其海报、简介和类型标签。点 **影片详情** 可以展开简介。
@@ -41,7 +47,7 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 
 ## 下载中文字幕
 
-在 **中文字幕** 区开启 **随一键刮削和手动匹配下载**，或点 **仅下载字幕** 给已有电影补字幕。仅下载字幕可独立运行，无需填写 TMDB 凭据。
+在侧边栏打开 **字幕下载器**。开启 **随一键刮削和手动匹配下载**，或点 **仅下载字幕** 给已有电影补字幕。仅下载字幕可独立运行，无需填写 TMDB 凭据。
 
 开启随任务下载后，影片资料和字幕可并行处理。每部影片的记录先显示资料结果，再显示字幕结果。被跳过资料刮削的电影仍可下载字幕。
 
@@ -51,7 +57,11 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 2. **伪射手**可在 **设置字幕来源** 中填写用户面板提供的 API Token。字幕服务由 ASSRT 提供。[ASSRT](https://assrt.net/) · [API 文档](https://secure.assrt.net/api/doc)
 3. **SubDL**可填写自己的 API Key，按电影 ID 或片名及年份查找简体和繁体字幕。[SubDL](https://subdl.com/) · [API 文档](https://subdl.com/developers)
 
-出现网络报错时，可以在 **中文字幕** 区点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索、获取详情或下载时遇到连接重置，应用会重新建立 HTTPS 连接并重试。主域名持续出错时，查询会尝试官方备用线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
+出现网络报错时，可以在 **字幕下载器** 点 **测试伪射手连接**。日志分别显示主域名和官方备用域名的状态。保存 Token 后再测试，还可确认凭据是否有效。搜索、获取详情或下载时遇到连接重置，应用会重新建立 HTTPS 连接并重试。主域名持续出错时，查询会尝试官方备用线路。[ASSRT API 文档](https://secure.assrt.net/api/doc)
+
+## 导出调试日志
+
+在侧边栏打开 **调试日志**，开启 **生成调试日志**，再重现问题。点 **导出 .log 文件**，在系统文件选择器里选保存位置。开关默认关闭。本机轮换保留最近约 2 MB，关闭生成后仍可导出。调试记录包括时间、运行阶段、HTTP 状态、耗时和错误位置。日志只收集结构化诊断字段，凭据、完整 URL 和影片路径留在记录范围之外。
 
 支持 SRT、ASS、SSA 和 VTT。应用在取得有效字幕后才创建 `Subs` 文件夹，按视频文件名（去掉扩展名）保存，例如 `feature-cut.CHN.srt`、`feature-cut.CHN.2.srt`。刮削记录会列出新保存字幕的来源和文件名。已有文件会保留，重复内容会跳过并标注本次匹配到的来源。Kodi 会扫描 `Subs`。`.CHN` 是本应用的命名标记，Kodi 按首选字幕语言自动选中文时使用的是 `.zh` 等语言代码，可在播放时手动选择 `.CHN` 字幕。[Kodi 外挂字幕扫描源码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/Util.cpp#L2055) · [Kodi 语言代码](https://github.com/xbmc/xbmc/blob/Omega/xbmc/utils/LangCodeExpander.cpp#L890)
 
@@ -102,6 +112,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.10.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.10.0)
+
+- 新增首页海报墙，每行两张海报，可按本地标签和类型筛选。
+- 电影刮削器和字幕下载器拥有独立的侧边栏入口。
+- 新增可开关的本机调试日志和 `.log` 导出。
 
 ### [v1.9.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.9.1)
 

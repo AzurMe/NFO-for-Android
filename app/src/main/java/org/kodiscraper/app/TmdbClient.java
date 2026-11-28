@@ -966,10 +966,12 @@ public final class TmdbClient implements MovieMetadataSource {
                 connection.setRequestProperty("Authorization", "Bearer " + bearerToken);
             }
             status = Math.max(0, connection.getResponseCode());
+            DebugLog.http(connection.getURL().getHost(), status, started);
             checkRunning();
             state = readProbeState(connection, status, authenticated, image);
         } catch (IOException error) {
             checkRunning();
+            DebugLog.failure("tmdb-probe", error);
             state = probeFailure(error);
         } finally {
             if (connection != null) finishRequest(connection);
@@ -1049,6 +1051,7 @@ public final class TmdbClient implements MovieMetadataSource {
     }
 
     private byte[] request(String address, boolean api, int maxBytes) throws IOException {
+        long started = System.nanoTime();
         HttpURLConnection connection = openRequest(address, 10000, 14000);
         try {
             connection.setRequestProperty("Accept", api ? "application/json" : "image/*");
@@ -1056,11 +1059,15 @@ public final class TmdbClient implements MovieMetadataSource {
                 connection.setRequestProperty("Authorization", "Bearer " + bearerToken);
             }
             int status = connection.getResponseCode();
+            DebugLog.http(connection.getURL().getHost(), status, started);
             checkRunning();
             if (status != HttpURLConnection.HTTP_OK) {
                 throw new HttpException(status, api, retryDelay(connection.getHeaderField("Retry-After")));
             }
             return readResponse(connection, maxBytes);
+        } catch (IOException failure) {
+            DebugLog.failure("http:" + connection.getURL().getHost(), failure);
+            throw failure;
         } finally {
             finishRequest(connection);
         }

@@ -303,6 +303,7 @@ final class TvdbClient implements MovieMetadataSource {
     }
 
     private byte[] request(String address, String payload, String token, int limit) throws IOException {
+        long started = System.nanoTime();
         checkRunning();
         boolean api = address.startsWith(API + "/");
         HttpURLConnection connection = (HttpURLConnection) URI.create(address).toURL().openConnection();
@@ -314,7 +315,7 @@ final class TvdbClient implements MovieMetadataSource {
             connection.setInstanceFollowRedirects(false);
             connection.setConnectTimeout(9_000);
             connection.setReadTimeout(15_000);
-            connection.setRequestProperty("User-Agent", "NFOForAndroid/1.8.0");
+            connection.setRequestProperty("User-Agent", "NFOForAndroid/1.10.0");
             if (api && !token.isEmpty()) connection.setRequestProperty("Authorization", "Bearer " + token);
             if (api && payload != null) {
                 byte[] body = payload.getBytes(StandardCharsets.UTF_8);
@@ -325,6 +326,7 @@ final class TvdbClient implements MovieMetadataSource {
                 try (OutputStream out = connection.getOutputStream()) { out.write(body); }
             }
             int code = connection.getResponseCode();
+            DebugLog.http(connection.getURL().getHost(), code, started);
             if (code != 200) {
                 if (api) {
                     String hint = code == 401 || code == 403 ? "，请检查 API Key 或订阅 PIN" : "";
@@ -342,11 +344,16 @@ final class TvdbClient implements MovieMetadataSource {
                 return out.toByteArray();
             }
         } catch (java.net.SocketTimeoutException timeout) {
+            DebugLog.failure("http:" + connection.getURL().getHost(), timeout);
             checkRunning();
             throw new IOException((api ? "TheTVDB API" : "TheTVDB 图片") + "请求超时", timeout);
         } catch (java.net.UnknownHostException dns) {
+            DebugLog.failure("http:" + connection.getURL().getHost(), dns);
             checkRunning();
             throw new IOException("无法解析 TheTVDB 服务器域名", dns);
+        } catch (IOException failure) {
+            DebugLog.failure("http:" + connection.getURL().getHost(), failure);
+            throw failure;
         } finally {
             synchronized (active) { active.remove(connection); }
             connection.disconnect();
