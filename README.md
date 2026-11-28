@@ -57,7 +57,7 @@ Metadata and artwork provided by TheTVDB.com. [TheTVDB](https://www.thetvdb.com/
 
 ## 文件整理与重命名
 
-在 **电影搜索路径** 区点 **整理与重命名**，预览当前库中可整理的影片，核对改名前后的路径后点 **确认重命名**。以 `Dune.Part.One.2021.2160p.WEB-DL.HDR.HEVC` 为例，文件夹和主视频会统一为 `Dune.Part.One.2021`，视频保留原 `.mp4` 或 `.mkv` 扩展名。
+在 **电影搜索路径** 区点 **整理与重命名**。弹窗会逐部列出电影文件夹和主视频的原名称、新名称，核对后点 **确认重命名** 才会执行。以 `Dune.Part.One.2021.2160p.WEB-DL.HDR.HEVC` 为例，文件夹和主视频会统一为 `Dune.Part.One.2021`，视频保留原 `.mp4` 或 `.mkv` 扩展名。
 
 整理会保留文件内容，并随视频改名同步其可识别的 Kodi 旁置文件和字幕。片名或年份无法确定、多个主视频、分段影片和同名冲突都会列入跳过项。已经加入 Kodi 资料库的影片改名后，可以更新资料库使其读取新路径。
 
@@ -102,6 +102,10 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.9.1](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.9.1)
+
+- 重命名确认弹窗分别显示电影文件夹和主视频改名前后的名称。
 
 ### [v1.9.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.9.0)
 
