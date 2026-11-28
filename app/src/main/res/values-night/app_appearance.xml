@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="appearance_background">#101113</color>
-    <color name="appearance_surface">#191B1F</color>
-    <color name="appearance_foreground">#F2F3F5</color>
-    <color name="appearance_muted">#AFB3BB</color>
-    <color name="appearance_border">#393D44</color>
-    <color name="appearance_tint">#24272C</color>
-    <color name="appearance_primary">#E5E7EB</color>
-    <color name="appearance_on_primary">#121417</color>
-    <color name="appearance_accent">#CCD0D8</color>
-    <color name="appearance_disabled">#737984</color>
-    <color name="appearance_ripple">#24FFFFFF</color>
-    <color name="appearance_scrim">#B3000000</color>
+    <color name="appearance_background">#111214</color>
+    <color name="appearance_surface">#1B1D21</color>
+    <color name="appearance_foreground">#F4F5F6</color>
+    <color name="appearance_muted">#B9BEC6</color>
+    <color name="appearance_border">#3B3F46</color>
+    <color name="appearance_tint">#292C32</color>
+    <color name="appearance_primary">#E7E9ED</color>
+    <color name="appearance_on_primary">#15181C</color>
+    <color name="appearance_accent">#D7DADF</color>
+    <color name="appearance_disabled">#8C929B</color>
+    <color name="appearance_ripple">#26F9FAFB</color>
+    <color name="appearance_scrim">#A6000000</color>
+    <color name="appearance_dialog_primary_ripple">#28171A1E</color>
 
     <style name="AppTheme" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
@@ -54,5 +55,11 @@
         <item name="android:textColorLink">@color/appearance_accent</item>
         <item name="android:switchStyle">@style/AppSwitch</item>
         <item name="android:colorBackground">@color/appearance_surface</item>
+        <item name="android:windowBackground">@drawable/app_dialog_window</item>
+        <item name="android:windowAnimationStyle">@style/AppDialogMotion</item>
+        <item name="android:backgroundDimAmount">0.56</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/AppDialogPrimaryAction</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/AppDialogAction</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/AppDialogAction</item>
     </style>
 </resources>

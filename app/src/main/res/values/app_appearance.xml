@@ -1,17 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="appearance_background">#F2F6FC</color>
+    <color name="appearance_background">#EEF5FD</color>
     <color name="appearance_surface">#FFFFFF</color>
-    <color name="appearance_foreground">#162941</color>
-    <color name="appearance_muted">#52647B</color>
-    <color name="appearance_border">#CBD8E9</color>
-    <color name="appearance_tint">#E5EFFD</color>
-    <color name="appearance_primary">#1E55B8</color>
+    <color name="appearance_foreground">#142842</color>
+    <color name="appearance_muted">#465B74</color>
+    <color name="appearance_border">#C9D9EB</color>
+    <color name="appearance_tint">#E2EEFC</color>
+    <color name="appearance_primary">#1D51AE</color>
     <color name="appearance_on_primary">#FFFFFF</color>
-    <color name="appearance_accent">#184FAD</color>
-    <color name="appearance_disabled">#A2AFC3</color>
-    <color name="appearance_ripple">#20235BB8</color>
-    <color name="appearance_scrim">#880C1D36</color>
+    <color name="appearance_accent">#1749A1</color>
+    <color name="appearance_disabled">#718299</color>
+    <color name="appearance_ripple">#1F2459B5</color>
+    <color name="appearance_scrim">#82112034</color>
+    <color name="appearance_dialog_primary_ripple">#28FFFFFF</color>
 
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
@@ -54,6 +55,12 @@
         <item name="android:textColorLink">@color/appearance_accent</item>
         <item name="android:switchStyle">@style/AppSwitch</item>
         <item name="android:colorBackground">@color/appearance_surface</item>
+        <item name="android:windowBackground">@drawable/app_dialog_window</item>
+        <item name="android:windowAnimationStyle">@style/AppDialogMotion</item>
+        <item name="android:backgroundDimAmount">0.42</item>
+        <item name="android:buttonBarPositiveButtonStyle">@style/AppDialogPrimaryAction</item>
+        <item name="android:buttonBarNegativeButtonStyle">@style/AppDialogAction</item>
+        <item name="android:buttonBarNeutralButtonStyle">@style/AppDialogAction</item>
     </style>
 
     <style name="AppSwitch" parent="android:style/Widget.Material.CompoundButton.Switch">

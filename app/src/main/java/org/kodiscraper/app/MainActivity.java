@@ -9,6 +9,7 @@ import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -107,7 +108,9 @@ public final class MainActivity extends Activity {
     private PosterWallScreen posterWall;
     private boolean posterRefreshPending;
     private FrameLayout navigationOverlay;
+    private View navigationScrim;
     private ScrollView navigationPanel;
+    private boolean navigationOpen;
     private final EnumMap<Page, Button> navigationItems = new EnumMap<>(Page.class);
     private View navigationReturnFocus;
     private Runnable pendingScraperDialog;
@@ -155,10 +158,17 @@ public final class MainActivity extends Activity {
     private String savedSubdlKey = "";
 
     private enum Page {
-        HOME("电影海报墙"), SCRAPER("电影刮削器"), SUBTITLES("字幕下载器"), PUSH("电影推送"), DEBUG("调试日志");
+        HOME("电影海报墙", UiIcon.Kind.LIBRARY), SCRAPER("电影刮削器", UiIcon.Kind.FILM),
+        SUBTITLES("字幕下载器", UiIcon.Kind.SUBTITLES), PUSH("电影推送", UiIcon.Kind.RECOMMEND),
+        DEBUG("调试日志", UiIcon.Kind.LOG);
 
         final String label;
-        Page(String label) { this.label = label; }
+        final UiIcon.Kind icon;
+
+        Page(String label, UiIcon.Kind icon) {
+            this.label = label;
+            this.icon = icon;
+        }
     }
 
     @Override
@@ -172,7 +182,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.13.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.14.0 android_api=" + Build.VERSION.SDK_INT);
         history = new ScrapeHistory(this);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
@@ -319,8 +329,10 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout scrollColumn(ScrollView parent) {
+        parent.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        parent.setVerticalScrollBarEnabled(false);
         LinearLayout column = vertical();
-        column.setPadding(dp(16), dp(4), dp(16), dp(14));
+        column.setPadding(dp(16), dp(2), dp(16), dp(18));
         parent.addView(column, new ScrollView.LayoutParams(-1, -2));
         return column;
     }
@@ -336,7 +348,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.13.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.14.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -399,7 +411,7 @@ public final class MainActivity extends Activity {
         resizeWidth(posterWall.view(), pageWidth);
         resizeWidth(debugPage, pageWidth);
         resizeWidth(moviePushPage, pageWidth);
-        resizeWidth(navigationPanel, Math.min(dp(318), Math.max(width - dp(52), width / 2)));
+        resizeWidth(navigationPanel, Math.min(dp(310), Math.max(0, width - dp(64))));
     }
 
     private static void resizeWidth(View view, int width) {
@@ -413,46 +425,56 @@ public final class MainActivity extends Activity {
     private void buildNavigation() {
         navigationOverlay = new FrameLayout(this);
         navigationOverlay.setVisibility(View.GONE);
-        View scrim = new View(this);
-        scrim.setBackgroundColor(appearance.scrim);
-        scrim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        scrim.setOnClickListener(view -> closeNavigation(true));
-        navigationOverlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
+        navigationScrim = new View(this);
+        navigationScrim.setBackgroundColor(appearance.scrim);
+        navigationScrim.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        navigationScrim.setFocusable(false);
+        navigationScrim.setOnClickListener(view -> closeNavigation(true));
+        navigationOverlay.addView(navigationScrim, new FrameLayout.LayoutParams(-1, -1));
 
         navigationPanel = new ScrollView(this);
         navigationPanel.setFillViewport(true);
-        navigationPanel.setBackgroundColor(appearance.surface);
-        navigationPanel.setElevation(dp(14));
+        navigationPanel.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        navigationPanel.setVerticalScrollBarEnabled(false);
+        navigationPanel.setBackground(shape(appearance.surface, 24, appearance.border));
+        navigationPanel.setClipToOutline(true);
+        navigationPanel.setElevation(dp(12));
         navigationPanel.setClickable(true);
         if (Build.VERSION.SDK_INT >= 28) {
             navigationPanel.setAccessibilityPaneTitle("导航菜单");
         }
-        navigationOverlay.addView(navigationPanel, new FrameLayout.LayoutParams(dp(318), -1, Gravity.LEFT));
+        FrameLayout.LayoutParams drawer = new FrameLayout.LayoutParams(dp(310), -1, Gravity.START);
+        drawer.setMargins(dp(10), dp(8), dp(10), dp(8));
+        navigationOverlay.addView(navigationPanel, drawer);
         LinearLayout content = vertical();
-        content.setPadding(dp(16), dp(18), dp(16), dp(18));
+        content.setPadding(dp(16), dp(14), dp(16), dp(18));
         navigationPanel.addView(content, new ScrollView.LayoutParams(-1, -2));
 
         LinearLayout heading = horizontal();
-        heading.setPadding(dp(8), 0, 0, 0);
-        TextView name = text("NFO for Android", 18, appearance.foreground, true);
-        heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1f));
-        Button dismiss = button("×", appearance.tint, appearance.accent);
-        dismiss.setTextSize(22);
-        dismiss.setContentDescription("关闭导航菜单");
+        heading.setPadding(dp(3), 0, 0, 0);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(R.mipmap.ic_launcher);
+        icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        heading.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        TextView name = text("NFO for Android", 17, appearance.foreground, true);
+        LinearLayout.LayoutParams brandSpace = new LinearLayout.LayoutParams(0, -2, 1f);
+        brandSpace.setMarginStart(dp(8));
+        heading.addView(name, brandSpace);
+        Button dismiss = iconButton(UiIcon.Kind.CLOSE, "关闭导航菜单");
         dismiss.setOnClickListener(view -> closeNavigation(true));
         heading.addView(dismiss, new LinearLayout.LayoutParams(dp(48), dp(48)));
         add(content, heading, 0);
 
         for (Page item : Page.values()) {
-            navigationItems.put(item, navigationItem(content, item, item == Page.HOME ? 15 : 5));
+            navigationItems.put(item, navigationItem(content, item, item == Page.HOME ? 20 : 5));
         }
-        addDivider(content, 12);
         Button appearanceNavigation = button("外观 · " + appearanceMode.label, appearance.surface, appearance.foreground);
         appearanceNavigation.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        appearanceNavigation.setPadding(dp(14), 0, dp(14), 0);
+        appearanceNavigation.setPaddingRelative(dp(14), dp(7), dp(14), dp(7));
+        addButtonIcon(appearanceNavigation, UiIcon.Kind.APPEARANCE, appearance.muted);
         appearanceNavigation.setMinHeight(dp(48));
         appearanceNavigation.setOnClickListener(view -> showAppearanceDialog());
-        add(content, appearanceNavigation, 8);
+        add(content, appearanceNavigation, 14);
         frame.addView(navigationOverlay, new FrameLayout.LayoutParams(-1, -1));
     }
 
@@ -478,20 +500,25 @@ public final class MainActivity extends Activity {
     private Button navigationItem(LinearLayout parent, Page destination, int top) {
         Button item = button(destination.label, appearance.surface, appearance.foreground);
         item.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-        item.setPadding(dp(15), 0, dp(15), 0);
+        item.setPaddingRelative(dp(14), dp(6), dp(14), dp(6));
+        addButtonIcon(item, destination.icon, appearance.muted);
+        item.setMinHeight(dp(51));
         item.setTextSize(16);
         item.setOnClickListener(view -> showPage(destination));
-        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-1, dp(54));
-        placement.topMargin = dp(top);
-        parent.addView(item, placement);
+        add(parent, item, top);
         return item;
     }
 
     private void openNavigation() {
-        if (navigationOverlay.getVisibility() == View.VISIBLE) {
-            return;
+        if (navigationOpen) return;
+        navigationOpen = true;
+        navigationPanel.animate().cancel();
+        navigationScrim.animate().cancel();
+        if (navigationOverlay.getVisibility() != View.VISIBLE) {
+            navigationReturnFocus = getCurrentFocus();
+            navigationPanel.setTranslationX(navigationOffset());
+            navigationScrim.setAlpha(0f);
         }
-        navigationReturnFocus = getCurrentFocus();
         InputMethodManager keyboard = getSystemService(InputMethodManager.class);
         if (keyboard != null) {
             keyboard.hideSoftInputFromWindow(frame.getWindowToken(), 0);
@@ -499,27 +526,54 @@ public final class MainActivity extends Activity {
         navigationItems.forEach((destination, item) -> updateNavigationItem(item, destination == page));
         pageHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         navigationOverlay.setVisibility(View.VISIBLE);
+        if (UiMotion.enabled()) {
+            navigationScrim.animate().alpha(1f).setDuration(180).setInterpolator(UiMotion.EASE_OUT).start();
+            navigationPanel.animate().translationX(0f).setDuration(240).setInterpolator(UiMotion.EASE_OUT).start();
+        } else {
+            navigationScrim.setAlpha(1f);
+            navigationPanel.setTranslationX(0f);
+        }
         navigationItems.get(page).requestFocus();
         updateNavigationBack();
+    }
+
+    private float navigationOffset() {
+        int direction = navigationPanel.getLayoutDirection() == View.LAYOUT_DIRECTION_RTL ? 1 : -1;
+        return direction * (navigationPanel.getLayoutParams().width + dp(16));
     }
 
     private void updateNavigationItem(Button item, boolean selected) {
         item.setSelected(selected);
         item.setTextColor(selected ? appearance.accent : appearance.foreground);
+        item.getCompoundDrawablesRelative()[0].setTint(selected ? appearance.accent : appearance.muted);
         item.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
-                shape(selected ? appearance.tint : appearance.surface, 12, 0), null));
+                shape(selected ? appearance.tint : appearance.surface, 15, 0), null));
     }
 
     private void closeNavigation(boolean restoreFocus) {
-        if (navigationOverlay.getVisibility() == View.VISIBLE) {
-            navigationOverlay.setVisibility(View.GONE);
-            pageHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-            if (restoreFocus && navigationReturnFocus != null && navigationReturnFocus.isShown()) {
-                navigationReturnFocus.requestFocus();
+        if (navigationOpen) {
+            navigationOpen = false;
+            navigationScrim.animate().cancel();
+            navigationPanel.animate().cancel();
+            if (UiMotion.enabled() && navigationPanel.isLaidOut()) {
+                navigationScrim.animate().alpha(0f).setDuration(170).setInterpolator(UiMotion.EASE_IN).start();
+                navigationPanel.animate().translationX(navigationOffset()).setDuration(170)
+                        .setInterpolator(UiMotion.EASE_IN).withEndAction(() -> finishClosingNavigation(restoreFocus)).start();
+            } else {
+                finishClosingNavigation(restoreFocus);
             }
-            navigationReturnFocus = null;
         }
         updateNavigationBack();
+    }
+
+    private void finishClosingNavigation(boolean restoreFocus) {
+        if (navigationOpen) return;
+        navigationOverlay.setVisibility(View.GONE);
+        pageHost.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        if (restoreFocus && navigationReturnFocus != null && navigationReturnFocus.isShown()) {
+            navigationReturnFocus.requestFocus();
+        }
+        navigationReturnFocus = null;
         if (pendingScraperDialog != null && page == Page.SCRAPER) {
             frame.post(this::showPendingScraperDialog);
         }
@@ -539,13 +593,15 @@ public final class MainActivity extends Activity {
                 retainedMoviePush = null;
             }
         }
+        boolean animate = page != null;
         page = destination;
         DebugLog.event("navigation", "page=" + page.name());
-        posterWall.view().setVisibility(page == Page.HOME ? View.VISIBLE : View.GONE);
-        scraperPage.setVisibility(page == Page.SCRAPER ? View.VISIBLE : View.GONE);
-        subtitlePage.setVisibility(page == Page.SUBTITLES ? View.VISIBLE : View.GONE);
-        debugPage.setVisibility(page == Page.DEBUG ? View.VISIBLE : View.GONE);
-        if (moviePushPage != null) moviePushPage.setVisibility(page == Page.PUSH ? View.VISIBLE : View.GONE);
+        for (Page entry : Page.values()) {
+            View view = pageView(entry);
+            if (view == null) continue;
+            UiMotion.reset(view);
+            view.setVisibility(entry == destination ? View.VISIBLE : View.GONE);
+        }
         LinearLayout logHost = page == Page.SUBTITLES ? subtitleColumn : scraperColumn;
         if ((page == Page.SCRAPER || page == Page.SUBTITLES) && logPanel.getParent() != logHost) {
             ((ViewGroup) logPanel.getParent()).removeView(logPanel);
@@ -553,9 +609,20 @@ public final class MainActivity extends Activity {
         }
         closeNavigation(false);
         frame.requestFocus();
+        if (animate) UiMotion.reveal(pageView(destination));
         if (page == Page.PUSH) {
             moviePush.onShown();
         }
+    }
+
+    private View pageView(Page item) {
+        return switch (item) {
+            case HOME -> posterWall.view();
+            case SCRAPER -> scraperPage;
+            case SUBTITLES -> subtitlePage;
+            case PUSH -> moviePushPage;
+            case DEBUG -> debugPage;
+        };
     }
 
     private void showScraperDialog(Runnable dialog) {
@@ -573,7 +640,7 @@ public final class MainActivity extends Activity {
     }
 
     private boolean handleNavigationBack() {
-        if (navigationOverlay.getVisibility() == View.VISIBLE) {
+        if (navigationOpen) {
             closeNavigation(true);
             return true;
         }
@@ -586,7 +653,7 @@ public final class MainActivity extends Activity {
 
     private void updateNavigationBack() {
         if (Build.VERSION.SDK_INT >= 33) {
-            boolean intercept = page != Page.HOME || navigationOverlay.getVisibility() == View.VISIBLE;
+            boolean intercept = page != Page.HOME || navigationOpen;
             if (intercept && navigationBackCallback == null) {
                 navigationBackCallback = this::handleNavigationBack;
                 getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -618,34 +685,36 @@ public final class MainActivity extends Activity {
     }
 
     LinearLayout createToolbar(String label, View trailing) {
-        LinearLayout toolbar = vertical();
-        toolbar.setBackgroundColor(appearance.surface);
-        LinearLayout top = horizontal();
-        top.setPadding(dp(14), dp(5), dp(14), dp(5));
-        Button menu = button("☰", appearance.surface, appearance.foreground);
-        menu.setTextSize(20);
-        menu.setContentDescription("打开导航菜单");
+        LinearLayout toolbar = horizontal();
+        toolbar.setPaddingRelative(dp(16), dp(8), dp(16), dp(10));
+        Button menu = iconButton(UiIcon.Kind.MENU, "打开导航菜单");
         menu.setOnClickListener(view -> openNavigation());
-        top.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        TextView title = text(label, 21, appearance.foreground, true);
+        toolbar.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        TextView title = text(label, 23, appearance.foreground, true);
+        if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
         LinearLayout.LayoutParams titleSpace = new LinearLayout.LayoutParams(0, -2, 1f);
-        titleSpace.leftMargin = dp(8);
-        top.addView(title, titleSpace);
+        titleSpace.setMarginStart(dp(12));
+        titleSpace.setMarginEnd(dp(6));
+        toolbar.addView(title, titleSpace);
         if (trailing != null) {
             trailing.setMinimumWidth(dp(48));
-            top.addView(trailing, new LinearLayout.LayoutParams(-2, dp(48)));
+            toolbar.addView(trailing, new LinearLayout.LayoutParams(-2, dp(48)));
         }
-        toolbar.addView(top, new LinearLayout.LayoutParams(-1, -2));
-        addDivider(toolbar, 0);
         return toolbar;
     }
 
-    private void addDivider(LinearLayout parent, int top) {
-        View divider = new View(this);
-        divider.setBackgroundColor(appearance.border);
-        LinearLayout.LayoutParams line = new LinearLayout.LayoutParams(-1, dp(1));
-        line.topMargin = dp(top);
-        parent.addView(divider, line);
+    private Button iconButton(UiIcon.Kind kind, String description) {
+        Button result = button("", appearance.tint, appearance.accent);
+        result.setContentDescription(description);
+        result.setPaddingRelative(dp(12), 0, dp(12), 0);
+        addButtonIcon(result, kind, appearance.accent);
+        result.setCompoundDrawablePadding(0);
+        return result;
+    }
+
+    private void addButtonIcon(Button button, UiIcon.Kind kind, int color) {
+        button.setCompoundDrawablesRelativeWithIntrinsicBounds(new UiIcon(kind, dp(24), color), null, null, null);
+        button.setCompoundDrawablePadding(dp(12));
     }
 
     private void addDirectory(LinearLayout column) {
@@ -943,13 +1012,12 @@ public final class MainActivity extends Activity {
     }
 
     private void addControls(LinearLayout stack) {
-        LinearLayout actionBar = vertical();
-        actionBar.setBackgroundColor(appearance.surface);
-        stack.addView(actionBar, new LinearLayout.LayoutParams(-1, -2));
-        addDivider(actionBar, 0);
         LinearLayout actions = horizontal();
-        actions.setPadding(dp(16), dp(10), dp(16), dp(10));
-        actionBar.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        actions.setBackground(shape(appearance.surface, 22, appearance.border));
+        actions.setPadding(dp(8), dp(8), dp(8), dp(8));
+        LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, -2);
+        actionSpace.setMargins(dp(16), dp(4), dp(16), dp(12));
+        stack.addView(actions, actionSpace);
         manual = button("手动匹配影片", appearance.tint, appearance.accent);
         manual.setMinHeight(dp(52));
         manual.setOnClickListener(view -> openManual());
@@ -1972,6 +2040,8 @@ public final class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         removeNavigationBackCallback();
+        if (navigationPanel != null) navigationPanel.animate().cancel();
+        if (navigationScrim != null) navigationScrim.animate().cancel();
         if (posterWall != null) posterWall.close();
         if (moviePush != null) {
             moviePush.close();
@@ -2072,7 +2142,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.13.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.14.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -2183,8 +2253,8 @@ public final class MainActivity extends Activity {
 
     private LinearLayout card(LinearLayout column) {
         LinearLayout panel = vertical();
-        panel.setPadding(dp(16), dp(14), dp(16), dp(14));
-        panel.setBackground(shape(appearance.surface, 14, appearance.border));
+        panel.setPadding(dp(17), dp(15), dp(17), dp(15));
+        panel.setBackground(shape(appearance.surface, 22, appearance.border));
         add(column, panel, 12);
         return panel;
     }
@@ -2226,8 +2296,13 @@ public final class MainActivity extends Activity {
         input.setTextSize(14);
         input.setInputType(type);
         input.setHint(hint);
-        input.setPadding(dp(12), dp(8), dp(12), dp(8));
-        input.setBackground(shape(appearance.background, 10, appearance.border));
+        StateListDrawable fieldBackground = new StateListDrawable();
+        fieldBackground.addState(new int[]{android.R.attr.state_focused},
+                shape(appearance.surface, 14, appearance.accent));
+        fieldBackground.addState(new int[0], shape(appearance.background, 14, appearance.border));
+        input.setBackground(fieldBackground);
+        input.setMinHeight(dp(48));
+        input.setPadding(dp(13), dp(9), dp(13), dp(9));
         return input;
     }
 
@@ -2240,13 +2315,16 @@ public final class MainActivity extends Activity {
         button.setMinWidth(0);
         button.setMinimumWidth(0);
         button.setMinimumHeight(0);
-        button.setPadding(dp(9), 0, dp(9), 0);
+        button.setPadding(dp(10), 0, dp(10), 0);
         button.setStateListAnimator(null);
         button.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         button.setTextColor(new ColorStateList(new int[][] {{-android.R.attr.state_enabled}, {}},
                 new int[] {appearance.disabled, foreground}));
         int ripple = fill == appearance.primary ? 0x26000000 | (foreground & 0x00ffffff) : appearance.ripple;
-        RippleDrawable background = new RippleDrawable(ColorStateList.valueOf(ripple), shape(fill, 10, 0), null);
+        StateListDrawable surfaces = new StateListDrawable();
+        surfaces.addState(new int[]{android.R.attr.state_focused}, shape(fill, 14, foreground));
+        surfaces.addState(new int[0], shape(fill, 14, 0));
+        RippleDrawable background = new RippleDrawable(ColorStateList.valueOf(ripple), surfaces, null);
         button.setBackground(background);
         return button;
     }
@@ -2256,7 +2334,7 @@ public final class MainActivity extends Activity {
         toggle.setText(description);
         toggle.setTextColor(appearance.foreground);
         toggle.setTextSize(14);
-        toggle.setMinHeight(dp(43));
+        toggle.setMinHeight(dp(49));
         toggle.setSwitchPadding(dp(12));
         toggle.setChecked(value);
         return toggle;

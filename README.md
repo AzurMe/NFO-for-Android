@@ -4,13 +4,13 @@ NFO for Android 是一款给 Kodi 电影资料库使用的安卓刮削器。选�
 
 [下载最新签名版 APK](https://github.com/AzurMe/NFO-for-Android/releases/latest) · [版本更新记录](#版本更新记录)
 
-在侧边栏选择 **外观**，可跟随系统或手动切换浅色与深色。浅色使用浅蓝和白色，深色使用黑色和灰色。
+在侧边栏选择 **外观**，可跟随系统或手动切换浅色与深色。浅色使用浅蓝和白色，深色使用石墨灰。页面、侧边栏和对话框采用短过渡，并遵循 Android 的动画设置。
 
 ## 电影海报墙
 
 首页从授权目录读取本地影片资料，按每行两张海报竖向排列。它显示已有有效电影 NFO、海报和背景图的影片。顶部按 Kodi NFO 的 `<genre>` 字段筛选，显示常用电影类型，其余可在 **更多类型** 中选择。应用打开、刮削或重命名后会自动刷新。[Kodi 电影 NFO 字段](https://kodi.wiki/view/NFO_files/Movies)
 
-点海报即可查看本地 NFO 中的剧情、上映日期、片长、评分、类型、标签和演职员。详情在本地读取，无需联网。
+点海报即可查看缩略海报以及本地 NFO 中的剧情、上映日期、片长、评分、电影类型和演职员。演员默认显示前五位，其余可点 **展开全部演员**，详情无需联网。
 
 详情中的 **播放预告片** 优先打开同目录的 `<视频名>-trailer.mp4` 等本地预告片，也能播放 NFO 中指向视频或 HLS 的 HTTPS 链接。它们使用 Android 开源系统的 VideoView，格式支持取决于设备解码器。TMDB 的影片视频接口提供预告片的站点和视频编号，应用把匹配到的 YouTube 编号写为 Kodi 支持的 `<trailer>` 链接。应用内通过官方 YouTube 播放器播放，受网络、地区和视频嵌入权限影响，可点 **在 YouTube 打开**。[TMDB 视频接口](https://developer.themoviedb.org/reference/movie-videos) · [Kodi 预告片规则](https://kodi.wiki/view/Trailers) · [Android VideoView](https://developer.android.com/reference/android/widget/VideoView) · [YouTube 嵌入播放器](https://developers.google.com/youtube/iframe_api_reference)
 
@@ -120,6 +120,12 @@ Kodi 平时将资料编辑、观看记录和续播点写入自己的资料库。
 [Kodi NFO 文档](https://kodi.wiki/view/NFO_files/Movies) · [Kodi 影片图片文档](https://kodi.wiki/view/Movie_artwork) · [Kodi 图片类型](https://kodi.wiki/view/Artwork_types)
 
 ## 版本更新记录
+
+### [v1.14.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.14.0)
+
+- 影片详情新增小海报，演员默认显示前五位，可展开完整名单。
+- 简化详情字段，移除标签、制片地区和制片公司。
+- 统一工具栏、侧边栏、卡片和对话框的浅色与深色样式，加入页面切换和侧边栏动画。
 
 ### [v1.13.0](https://github.com/AzurMe/NFO-for-Android/releases/tag/v1.13.0)
 

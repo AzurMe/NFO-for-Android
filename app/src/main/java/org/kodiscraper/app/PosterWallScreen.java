@@ -1,10 +1,18 @@
 package org.kodiscraper.app;
 
 import android.app.AlertDialog;
+import android.content.res.ColorStateList;
+import android.content.res.Configuration;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.text.TextUtils;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.GridView;
@@ -91,6 +99,10 @@ final class PosterWallScreen implements AutoCloseable {
         grid.setVerticalSpacing(activity.dp(12));
         grid.setPadding(activity.dp(16), activity.dp(4), activity.dp(16), activity.dp(16));
         grid.setClipToPadding(false);
+        grid.setSelector(posterSelection());
+        grid.setDrawSelectorOnTop(true);
+        grid.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                centerPosterGrid(right - left, bottom - top));
         grid.setAdapter(adapter);
         grid.setOnItemClickListener((parent, view, position, id) -> showMovie(adapter.getItem(position)));
         root.addView(grid, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -166,6 +178,7 @@ final class PosterWallScreen implements AutoCloseable {
         if (selectedGenre != null && !counts.containsKey(selectedGenre)) selectedGenre = null;
         rebuildGenres();
         filter();
+        if (!found.isEmpty()) UiMotion.reveal(grid);
     }
 
     private void rebuildGenres() {
@@ -196,7 +209,8 @@ final class PosterWallScreen implements AutoCloseable {
             selectedGenre = (String) value;
             filter();
         });
-        LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-2, activity.dp(40));
+        chip.setMinHeight(activity.dp(48));
+        LinearLayout.LayoutParams space = new LinearLayout.LayoutParams(-2, -2);
         space.rightMargin = activity.dp(6);
         genreChips.addView(chip, space);
     }
@@ -219,7 +233,8 @@ final class PosterWallScreen implements AutoCloseable {
             boolean active = value == null ? selectedGenre == null : value.equalsIgnoreCase(selectedGenre);
             chip.setSelected(active);
             chip.setTextColor(active ? appearance.accent : appearance.muted);
-            chip.setBackground(activity.shape(active ? appearance.tint : appearance.surface, 12, appearance.border));
+            chip.setBackground(new RippleDrawable(ColorStateList.valueOf(appearance.ripple),
+                    activity.shape(active ? appearance.tint : appearance.surface, 12, appearance.border), null));
         }
         List<ScrapeEngine.LibraryMovie> visible = new ArrayList<>();
         for (ScrapeEngine.LibraryMovie movie : library) {
@@ -235,10 +250,8 @@ final class PosterWallScreen implements AutoCloseable {
         if (movieDetails != null || closed) return;
         LinearLayout body = activity.vertical();
         body.setPadding(activity.dp(22), activity.dp(12), activity.dp(22), activity.dp(16));
-        TextView message = activity.text("正在读取 NFO…", 14, appearance.muted, false);
-        activity.add(body, message, 0);
-        ScrollView scroll = new ScrollView(activity);
-        scroll.addView(body);
+        PosterMovieDetails details = new PosterMovieDetails(activity, body, movie, posters);
+        ScrollView scroll = detailScroll(body);
         AlertDialog dialog = new AlertDialog.Builder(activity).setTitle(movie.title())
                 .setView(scroll).setNegativeButton("关闭", null).create();
         movieDetails = dialog;
@@ -248,13 +261,17 @@ final class PosterWallScreen implements AutoCloseable {
             movieDetails = null;
         });
         dialog.show();
+        sizeMovieDialog(dialog);
+        scroll.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                sizeMovieDialog(dialog));
         detailRead = new Thread(() -> {
             try {
                 byte[] bytes = MovieStorage.read(activity.getContentResolver(), movie.nfo(), ScrapeEngine.NFO_READ_LIMIT);
                 Element nfo = KodiNfoPreservation.readMovie(bytes);
                 activity.runOnUiThread(() -> {
                     if (closed || movieDetails != dialog || !dialog.isShowing()) return;
-                    new PosterMovieDetails(activity, body).render(nfo, movie, source -> {
+                    detailRead = null;
+                    details.render(nfo, source -> {
                         stopTrailer();
                         trailerDialog = TrailerPlayer.show(activity, source);
                     });
@@ -263,11 +280,67 @@ final class PosterWallScreen implements AutoCloseable {
                 if (Thread.currentThread().isInterrupted()) return;
                 DebugLog.failure("poster-details", failure);
                 activity.runOnUiThread(() -> {
-                    if (movieDetails == dialog && dialog.isShowing()) message.setText("无法读取这部电影的 NFO。");
+                    if (movieDetails == dialog && dialog.isShowing()) {
+                        detailRead = null;
+                        details.showError();
+                    }
                 });
             }
         }, "PosterDetails");
         detailRead.start();
+    }
+
+    private void centerPosterGrid(int width, int height) {
+        if (width <= 0 || height <= 0) return;
+        int maxWidth = activity.dp(640);
+        if (activity.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            int cardHeight = height - grid.getPaddingTop() - grid.getPaddingBottom();
+            maxWidth = Math.min(maxWidth, Math.max(activity.dp(340), cardHeight * 4 / 3 + activity.dp(12)));
+        }
+        int side = Math.max(activity.dp(16), (width - maxWidth) / 2);
+        if (grid.getPaddingLeft() != side) {
+            grid.setPadding(side, grid.getPaddingTop(), side, grid.getPaddingBottom());
+        }
+    }
+
+    private RippleDrawable posterSelection() {
+        GradientDrawable outline = activity.shape(Color.TRANSPARENT, 14, 0);
+        outline.setStroke(activity.dp(2), appearance.accent);
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[] {android.R.attr.state_focused}, outline);
+        states.addState(new int[0], new ColorDrawable(Color.TRANSPARENT));
+        return new RippleDrawable(ColorStateList.valueOf(appearance.ripple), states,
+                activity.shape(Color.WHITE, 14, 0));
+    }
+
+    private ScrollView detailScroll(LinearLayout body) {
+        ScrollView scroll = new ScrollView(activity) {
+            @Override protected void onMeasure(int widthSpec, int heightSpec) {
+                Configuration configuration = getResources().getConfiguration();
+                if (configuration.screenHeightDp > 0) {
+                    int reserve = Math.round(130 * Math.max(1f, configuration.fontScale));
+                    int available = activity.dp(Math.max(96, configuration.screenHeightDp - reserve));
+                    if (MeasureSpec.getMode(heightSpec) == MeasureSpec.UNSPECIFIED
+                            || MeasureSpec.getSize(heightSpec) > available) {
+                        heightSpec = MeasureSpec.makeMeasureSpec(available, MeasureSpec.AT_MOST);
+                    }
+                }
+                super.onMeasure(widthSpec, heightSpec);
+            }
+        };
+        scroll.addView(body);
+        return scroll;
+    }
+
+    private void sizeMovieDialog(AlertDialog dialog) {
+        Window window = dialog.getWindow();
+        int screen = activity.getResources().getConfiguration().screenWidthDp;
+        if (window != null && screen > 24) {
+            int width = activity.dp(Math.min(540, screen - 24));
+            if (window.getAttributes().width != width) {
+                window.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+            }
+        }
     }
 
     void stopTrailer() {
@@ -309,7 +382,8 @@ final class PosterWallScreen implements AutoCloseable {
         PosterCard() {
             super(activity);
             setOrientation(VERTICAL);
-            setBackground(activity.shape(appearance.surface, 12, appearance.border));
+            setBackground(activity.shape(appearance.surface, 14, appearance.border));
+            setPadding(activity.dp(1), activity.dp(1), activity.dp(1), activity.dp(1));
             setClipToOutline(true);
             setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
             image = new ImageView(activity) {
