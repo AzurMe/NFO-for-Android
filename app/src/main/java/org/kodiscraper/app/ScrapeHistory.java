@@ -13,9 +13,12 @@ import java.util.List;
 final class ScrapeHistory {
     private static final String KEY = "entries";
     private static final String CURRENT_COUNT = "current_count";
+    private static final String CURRENT_ONLY = "current_only";
     private static final int LIMIT = 200;
 
-    record Entry(String detail, String concise, String moviePath, String movieTitle, boolean startsTask) {
+    enum Tone { NEUTRAL, SUCCESS, FAILURE }
+
+    record Entry(String message, String moviePath, String movieTitle, Tone tone) {
         boolean isMovie() {
             return !moviePath.isEmpty();
         }
@@ -29,80 +32,78 @@ final class ScrapeHistory {
 
     ScrapeHistory(Context context, String namespace) {
         preferences = context.getSharedPreferences(namespace, Context.MODE_PRIVATE);
-    }
-
-    List<Entry> newestFirst() {
-        List<Entry> entries = new ArrayList<>();
-        try {
-            JSONArray saved = new JSONArray(preferences.getString(KEY, "[]"));
-            for (int index = 0; index < Math.min(saved.length(), LIMIT); index++) {
-                Object value = saved.opt(index);
-                if (value instanceof String text) {
-                    entries.add(new Entry(text, text, "", "", false));
-                } else if (value instanceof JSONObject object) {
-                    String detail = object.optString("detail", "");
-                    entries.add(new Entry(detail, object.optString("concise", detail),
-                            object.optString("moviePath", ""), object.optString("movieTitle", ""),
-                            object.optBoolean("startsTask")));
-                }
-            }
-        } catch (JSONException | ClassCastException invalidHistory) {
-            // An unreadable history should not prevent a new run.
+        synchronized (preferences) {
+            if (!preferences.contains(CURRENT_ONLY)) save(currentTask());
         }
-        return entries;
     }
 
     List<Entry> currentTask() {
         synchronized (preferences) {
-            List<Entry> entries = newestFirst();
-            return entries.subList(0, currentCount(entries.size()));
+            List<Entry> entries = new ArrayList<>();
+            try {
+                JSONArray saved = new JSONArray(preferences.getString(KEY, "[]"));
+                int count = Math.min(LIMIT, Math.min(saved.length(), preferences.getInt(CURRENT_COUNT, 0)));
+                for (int index = 0; index < count; index++) {
+                    Object value = saved.opt(index);
+                    if (value instanceof String text && !text.isEmpty()) {
+                        entries.add(new Entry(text, "", "", Tone.NEUTRAL));
+                    } else if (value instanceof JSONObject object) {
+                        String message = object.optString("message",
+                                object.optString("concise", object.optString("detail", "")));
+                        if (!message.isEmpty()) {
+                            entries.add(new Entry(message, object.optString("moviePath", ""),
+                                    object.optString("movieTitle", ""), tone(object.optString("tone"))));
+                        }
+                    }
+                }
+            } catch (JSONException | ClassCastException invalidRecords) {
+                // An unreadable record should not prevent a new run.
+            }
+            return entries;
         }
     }
 
-    List<Entry> append(String message, boolean startsTask) {
-        return append(new Entry(message, message, "", "", startsTask));
+    List<Entry> append(String message, boolean startsTask, Tone tone) {
+        return append(new Entry(message, "", "", tone), startsTask);
     }
 
-    List<Entry> appendMovie(String moviePath, String movieTitle, String concise, String detail) {
-        return append(new Entry(detail, concise, moviePath, movieTitle, false));
+    List<Entry> appendMovie(String moviePath, String movieTitle, String message, Tone tone) {
+        return append(new Entry(message, moviePath, movieTitle, tone), false);
     }
 
-    private List<Entry> append(Entry entry) {
+    private List<Entry> append(Entry entry, boolean startsTask) {
         synchronized (preferences) {
-            List<Entry> entries = newestFirst();
-            int count = entry.startsTask() ? 1 : Math.min(LIMIT, currentCount(entries.size()) + 1);
-            if (entries.size() == LIMIT) {
-                entries.remove(LIMIT - 1);
-            }
+            List<Entry> entries = startsTask ? new ArrayList<>() : currentTask();
+            if (entries.size() == LIMIT) entries.remove(LIMIT - 1);
             entries.add(0, entry);
-            JSONArray saved = new JSONArray();
-            for (Entry item : entries) saved.put(encode(item));
-            // Finish the write before showing the entry so it survives immediate process termination.
-            preferences.edit().putString(KEY, saved.toString()).putInt(CURRENT_COUNT, count).commit();
-            return entries.subList(0, count);
+            save(entries);
+            return entries;
         }
     }
 
-    private static Object encode(Entry entry) {
-        if (!entry.isMovie() && !entry.startsTask()) return entry.detail();
+    private void save(List<Entry> entries) {
+        JSONArray saved = new JSONArray();
+        for (Entry entry : entries) saved.put(encode(entry));
+        // Finish the write before showing the entry so it survives immediate process termination.
+        preferences.edit().putString(KEY, saved.toString()).putInt(CURRENT_COUNT, entries.size())
+                .putBoolean(CURRENT_ONLY, true).commit();
+    }
+
+    private static JSONObject encode(Entry entry) {
         try {
-            JSONObject value = new JSONObject().put("detail", entry.detail());
-            if (entry.isMovie()) {
-                value.put("concise", entry.concise()).put("moviePath", entry.moviePath())
-                        .put("movieTitle", entry.movieTitle());
-            }
-            if (entry.startsTask()) value.put("startsTask", true);
+            JSONObject value = new JSONObject().put("message", entry.message()).put("tone", entry.tone().name());
+            if (entry.isMovie()) value.put("moviePath", entry.moviePath()).put("movieTitle", entry.movieTitle());
             return value;
         } catch (JSONException invalid) {
             throw new IllegalStateException("无法创建刮削记录", invalid);
         }
     }
 
-    private int currentCount(int size) {
+    private static Tone tone(String value) {
         try {
-            return Math.max(0, Math.min(size, preferences.getInt(CURRENT_COUNT, 0)));
-        } catch (ClassCastException invalidCount) {
-            return 0;
+            return Tone.valueOf(value);
+        } catch (IllegalArgumentException invalidTone) {
+            return Tone.NEUTRAL;
         }
     }
 }

@@ -197,7 +197,6 @@ final class PosterWallScreen implements AutoCloseable {
 
     private void addGenre(String label, Object value) {
         Button chip = activity.button(label, appearance.surface, appearance.muted);
-        chip.setTextSize(14);
         chip.setMaxWidth(activity.dp(210));
         chip.setSingleLine(true);
         chip.setEllipsize(TextUtils.TruncateAt.END);

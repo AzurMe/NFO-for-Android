@@ -8,7 +8,7 @@ import android.graphics.PixelFormat;
 import android.graphics.drawable.Drawable;
 
 final class UiIcon extends Drawable {
-    enum Kind { MENU, CLOSE, LIBRARY, FILM, SUBTITLES, RECOMMEND, LOG, APPEARANCE, INFO }
+    enum Kind { MENU, CLOSE, LIBRARY, FILM, SUBTITLES, RECOMMEND, LOG, APPEARANCE, INFO, SETTINGS, BACK }
 
     private final Paint ink = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Path outline = new Path();
@@ -94,8 +94,40 @@ final class UiIcon extends Drawable {
                 canvas.drawLine(12, 11.5f, 12, 16, ink);
                 canvas.drawPoint(12, 8, ink);
                 break;
+            case SETTINGS:
+                drawGear(canvas);
+                break;
+            case BACK:
+                canvas.drawLine(5, 12, 20, 12, ink);
+                outline.rewind();
+                outline.moveTo(11, 6);
+                outline.lineTo(5, 12);
+                outline.lineTo(11, 18);
+                canvas.drawPath(outline, ink);
+                break;
         }
         canvas.restoreToCount(restore);
+    }
+
+    private void drawGear(Canvas canvas) {
+        outline.rewind();
+        for (int tooth = 0; tooth < 8; tooth++) {
+            double angle = tooth * Math.PI / 4;
+            gearPoint(angle - 0.27, 7.5f, tooth == 0);
+            gearPoint(angle - 0.14, 9.5f, false);
+            gearPoint(angle + 0.14, 9.5f, false);
+            gearPoint(angle + 0.27, 7.5f, false);
+        }
+        outline.close();
+        canvas.drawPath(outline, ink);
+        canvas.drawCircle(12, 12, 3, ink);
+    }
+
+    private void gearPoint(double angle, float radius, boolean first) {
+        float x = 12 + radius * (float) Math.cos(angle);
+        float y = 12 + radius * (float) Math.sin(angle);
+        if (first) outline.moveTo(x, y);
+        else outline.lineTo(x, y);
     }
 
     @Override public int getIntrinsicWidth() { return size; }

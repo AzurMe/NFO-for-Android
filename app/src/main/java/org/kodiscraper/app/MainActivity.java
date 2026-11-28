@@ -60,6 +60,7 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -74,9 +75,9 @@ public final class MainActivity extends Activity {
     private static final Uri MOVIES_LOCATION = DocumentsContract.buildDocumentUri(
             "com.android.externalstorage.documents", "primary:Movies");
     private static final String STATE_PAGE = "navigation_page";
+    private static final String STATE_WORKBENCH_SETTINGS = "workbench_settings";
     private static final String[] LANGUAGES = {"zh-CN", "zh-TW", "en-US", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES"};
     private static final String[] LANGUAGE_NAMES = {"简体中文", "繁體中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español"};
-    private static final DateTimeFormatter LOG_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.ROOT);
     private static final Pattern SECRET_PARAMETER = Pattern.compile(
             "(?i)([?&](?:api[_-]?key|(?:access[_-]?)?token|authorization)=)[^&#\\s]+");
     private static final Pattern BEARER_VALUE = Pattern.compile("(?i)(\\bBearer\\s+)[A-Za-z0-9._~+/=-]+");
@@ -97,6 +98,9 @@ public final class MainActivity extends Activity {
     private FrameLayout pageHost;
     private LinearLayout scraperPage;
     private LinearLayout subtitlePage;
+    private LinearLayout scraperSettingsPage;
+    private LinearLayout subtitleSettingsPage;
+    private boolean workbenchSettingsVisible;
     private LinearLayout debugPage;
     private LinearLayout scraperColumn;
     private LinearLayout subtitleColumn;
@@ -129,6 +133,7 @@ public final class MainActivity extends Activity {
     private Button organizeMovies;
     private Button pickCollectionFolder;
     private Button clearCollectionFolder;
+    private LinearLayout collectionClearRow;
     private Button validate;
     private Button start;
     private Button manual;
@@ -179,7 +184,7 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         settings = getSharedPreferences("scraper", MODE_PRIVATE);
         DebugLog.configure(this, settings.getBoolean("debug_log", false));
-        DebugLog.event("app", "opened version=1.17.0 android_api=" + Build.VERSION.SDK_INT);
+        DebugLog.event("app", "opened version=1.18.0 android_api=" + Build.VERSION.SDK_INT);
         appearance = AppAppearance.from(this);
         appearanceMode = AppAppearance.read(settings);
         savedCredential = CredentialStore.read(settings, "tmdb");
@@ -215,6 +220,7 @@ public final class MainActivity extends Activity {
             scroll.post(() -> scroll.scrollTo(0, retained.scraperScroll()));
         }
         showPage(state == null ? Page.HOME : Page.valueOf(state.getString(STATE_PAGE, Page.HOME.name())));
+        if (state != null && state.getBoolean(STATE_WORKBENCH_SETTINGS)) setWorkbenchSettingsVisible(true);
     }
 
     @Override
@@ -294,24 +300,22 @@ public final class MainActivity extends Activity {
         });
         scraperColumn = scrollColumn(scroll);
         scraperLog = addLog(scraperColumn, "刮削记录", new ScrapeHistory(this));
-        LinearLayout scraperSettings = card(scraperColumn);
-        addDirectory(settingsSection(scraperSettings, false));
-        addConnection(settingsSection(scraperSettings, true));
-        addOptions(settingsSection(scraperSettings, true));
         addScraperActions();
         subtitlePage = vertical();
         subtitlePage.addView(createToolbar(Page.SUBTITLES.label, null));
         subtitleScroll = new ScrollView(this);
+        subtitleScroll.setFillViewport(true);
         subtitlePage.addView(subtitleScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
         subtitleColumn = scrollColumn(subtitleScroll);
         subtitleLog = addLog(subtitleColumn, "字幕下载记录", new ScrapeHistory(this, "subtitle_history"));
-        LinearLayout subtitleConfig = card(subtitleColumn);
-        addSubtitleDirectory(settingsSection(subtitleConfig, false));
-        addSubtitleSources(settingsSection(subtitleConfig, true));
-        addSubtitles(settingsSection(subtitleConfig, true));
+        LinearLayout subtitleActions = horizontal();
         subtitlesOnly = primaryAction("一键下载字幕", this::runSubtitleBatch);
-        addFooter(subtitlePage, subtitlesOnly);
+        subtitleActions.addView(subtitlesOnly, new LinearLayout.LayoutParams(0, -2, 1f));
+        addSettingsButton(subtitleActions, "字幕下载设置");
+        addFooter(subtitlePage, subtitleActions);
         pageHost.addView(subtitlePage, viewport());
+        scraperSettingsPage = buildWorkbenchSettings("刮削设置", this::addScraperSettings);
+        subtitleSettingsPage = buildWorkbenchSettings("字幕下载设置", this::addSubtitleSettings);
         debugPage = buildDebugPage();
         pageHost.addView(debugPage, viewport());
         buildNavigation();
@@ -322,6 +326,21 @@ public final class MainActivity extends Activity {
         updateFolderLabel();
         updateCollectionFolderLabel();
         updateUi();
+    }
+
+    private LinearLayout buildWorkbenchSettings(String title, Consumer<LinearLayout> buildRows) {
+        LinearLayout settingsPage = vertical();
+        settingsPage.setBackgroundColor(appearance.surface);
+        Button back = iconButton(UiIcon.Kind.BACK, "返回任务页面");
+        back.setOnClickListener(view -> setWorkbenchSettingsVisible(false));
+        settingsPage.addView(buildToolbar(title, null, back));
+        ScrollView settingsScroll = new ScrollView(this);
+        settingsScroll.setFillViewport(true);
+        settingsPage.addView(settingsScroll, new LinearLayout.LayoutParams(-1, 0, 1f));
+        buildRows.accept(scrollColumn(settingsScroll));
+        settingsPage.setVisibility(View.GONE);
+        pageHost.addView(settingsPage, viewport());
+        return settingsPage;
     }
 
     private LinearLayout scrollColumn(ScrollView parent) {
@@ -344,7 +363,7 @@ public final class MainActivity extends Activity {
             if (!enabled) DebugLog.event("app", "recording stopped");
             settings.edit().putBoolean("debug_log", enabled).apply();
             DebugLog.configure(this, enabled);
-            if (enabled) DebugLog.event("app", "recording started version=1.17.0 android_api=" + Build.VERSION.SDK_INT);
+            if (enabled) DebugLog.event("app", "recording started version=1.18.0 android_api=" + Build.VERSION.SDK_INT);
         });
         add(panel, recording, 0);
         add(panel, text("记录运行阶段、网络状态和错误位置。最近约 2 MB 日志保存在本机。",
@@ -404,6 +423,8 @@ public final class MainActivity extends Activity {
         int pageWidth = Math.min(width, dp(660));
         resizeWidth(scraperPage, pageWidth);
         resizeWidth(subtitlePage, pageWidth);
+        resizeWidth(scraperSettingsPage, pageWidth);
+        resizeWidth(subtitleSettingsPage, pageWidth);
         resizeWidth(posterWall.view(), pageWidth);
         resizeWidth(debugPage, pageWidth);
         resizeWidth(moviePushPage, pageWidth);
@@ -507,7 +528,6 @@ public final class MainActivity extends Activity {
         item.setPaddingRelative(dp(14), dp(6), dp(14), dp(6));
         addButtonIcon(item, destination.icon, appearance.muted);
         item.setMinHeight(dp(51));
-        item.setTextSize(16);
         item.setOnClickListener(view -> showPage(destination));
         add(parent, item, top);
         return item;
@@ -587,6 +607,7 @@ public final class MainActivity extends Activity {
             closeNavigation(true);
             return;
         }
+        if (workbenchSettingsVisible) setWorkbenchSettingsVisible(false);
         if (destination == Page.PUSH && moviePush == null) {
             moviePush = new MoviePushScreen(this);
             moviePushPage = moviePush.view();
@@ -623,13 +644,31 @@ public final class MainActivity extends Activity {
         };
     }
 
+    private void setWorkbenchSettingsVisible(boolean visible) {
+        LinearLayout settingsPage = page == Page.SCRAPER ? scraperSettingsPage
+                : page == Page.SUBTITLES ? subtitleSettingsPage : null;
+        if (settingsPage == null || visible == workbenchSettingsVisible) return;
+        View workbench = pageView(page);
+        if (!visible) {
+            dismissKeyboard();
+            persistOptions();
+        }
+        workbenchSettingsVisible = visible;
+        UiMotion.reset(visible ? workbench : settingsPage);
+        workbench.setVisibility(visible ? View.GONE : View.VISIBLE);
+        settingsPage.setVisibility(visible ? View.VISIBLE : View.GONE);
+        frame.requestFocus();
+        UiMotion.reveal(visible ? settingsPage : workbench);
+        if (!visible && pendingScraperDialog != null) frame.post(this::showPendingScraperDialog);
+    }
+
     private void showScraperDialog(Runnable dialog) {
         pendingScraperDialog = dialog;
         showPendingScraperDialog();
     }
 
     private void showPendingScraperDialog() {
-        if (pendingScraperDialog != null && page == Page.SCRAPER
+        if (pendingScraperDialog != null && page == Page.SCRAPER && !workbenchSettingsVisible
                 && navigationOverlay.getVisibility() != View.VISIBLE && !isFinishing() && !isDestroyed()) {
             Runnable dialog = pendingScraperDialog;
             pendingScraperDialog = null;
@@ -640,6 +679,10 @@ public final class MainActivity extends Activity {
     private boolean handleNavigationBack() {
         if (navigationOpen) {
             closeNavigation(true);
+            return true;
+        }
+        if (workbenchSettingsVisible) {
+            setWorkbenchSettingsVisible(false);
             return true;
         }
         if (page != Page.HOME) {
@@ -680,14 +723,19 @@ public final class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
         state.putString(STATE_PAGE, page.name());
+        state.putBoolean(STATE_WORKBENCH_SETTINGS, workbenchSettingsVisible);
     }
 
     LinearLayout createToolbar(String label, View trailing) {
-        LinearLayout toolbar = horizontal();
-        toolbar.setPaddingRelative(dp(16), dp(8), dp(16), dp(10));
         Button menu = iconButton(UiIcon.Kind.MENU, "打开导航菜单");
         menu.setOnClickListener(view -> openNavigation());
-        toolbar.addView(menu, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        return buildToolbar(label, trailing, menu);
+    }
+
+    private LinearLayout buildToolbar(String label, View trailing, Button leading) {
+        LinearLayout toolbar = horizontal();
+        toolbar.setPaddingRelative(dp(16), dp(8), dp(16), dp(10));
+        toolbar.addView(leading, new LinearLayout.LayoutParams(dp(48), dp(48)));
         TextView title = text(label, 24, appearance.foreground, true);
         if (Build.VERSION.SDK_INT >= 28) title.setAccessibilityHeading(true);
         LinearLayout.LayoutParams titleSpace = new LinearLayout.LayoutParams(0, -2, 1f);
@@ -715,49 +763,43 @@ public final class MainActivity extends Activity {
         button.setCompoundDrawablePadding(dp(12));
     }
 
-    private void addDirectory(LinearLayout card) {
-        addSettingsHeading(card, "电影搜索路径");
-        folderName = text("", 14, appearance.muted, false);
-        folderName.setMaxLines(3);
-        folderName.setTextIsSelectable(true);
-        add(card, folderName, 7);
-        pickFolder = button("设置搜索路径", appearance.tint, appearance.accent);
-        pickFolder.setOnClickListener(view -> chooseFolder());
-        pickFolder.setMinHeight(dp(48));
-        add(card, pickFolder, 11);
+    private void addScraperSettings(LinearLayout column) {
+        addDirectory(column);
+        addConnection(column);
+        addOptions(column);
     }
 
-    private void addConnection(LinearLayout card) {
-        LinearLayout selection = horizontal();
-        selection.addView(settingsHeading("影片资料来源"), new LinearLayout.LayoutParams(0, -2, 1f));
-        metadataSourceButton = button(metadataProvider.label, appearance.tint, appearance.accent);
-        metadataSourceButton.setContentDescription("选择影片资料来源 · " + metadataProvider.label);
-        metadataSourceButton.setMinHeight(dp(48));
-        metadataSourceButton.setOnClickListener(view -> selectMetadataSource());
-        selection.addView(metadataSourceButton);
-        add(card, selection, 0);
+    private void addSubtitleSettings(LinearLayout column) {
+        addSubtitleDirectory(column);
+        addSubtitleSources(column);
+        addSubtitles(column);
+    }
+
+    private void addDirectory(LinearLayout column) {
+        folderName = text("", 12, appearance.muted, false);
+        folderName.setMaxLines(3);
+        folderName.setTextIsSelectable(true);
+        pickFolder = settingsButton("授权", "设置电影搜索路径", this::chooseFolder);
+        addSettingsRow(column, "搜索路径", folderName, pickFolder, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void addConnection(LinearLayout column) {
+        metadataSourceButton = settingsButton(metadataProvider.label, "选择影片资料来源 · " + metadataProvider.label,
+                this::selectMetadataSource);
+        addSettingsRow(column, "影片资料来源", metadataSourceButton);
         tvdbOptions = vertical();
-        LinearLayout tvdbButtons = horizontal();
-        Button setupTvdb = button("配置 TheTVDB", appearance.tint, appearance.accent);
-        setupTvdb.setOnClickListener(view -> configureTvdb());
-        tvdbButtons.addView(setupTvdb);
-        Button testTvdb = button("测试连接", appearance.tint, appearance.accent);
-        testTvdb.setContentDescription("测试 TheTVDB 连接");
-        testTvdb.setOnClickListener(view -> testTvdb());
-        LinearLayout.LayoutParams testSpace = new LinearLayout.LayoutParams(-2, dp(48));
-        testSpace.leftMargin = dp(8);
-        tvdbButtons.addView(testTvdb, testSpace);
-        add(tvdbOptions, tvdbButtons, 4);
+        addSettingsRow(tvdbOptions, "TheTVDB 凭据", settingsButton("配置", "配置 TheTVDB 凭据", this::configureTvdb));
+        addSettingsRow(tvdbOptions, "TheTVDB 连接", settingsButton("测试", "测试 TheTVDB 连接", () -> {
+            if (busy) return;
+            if (!savedTvdbKey.isEmpty()) setWorkbenchSettingsVisible(false);
+            testTvdb();
+        }));
         tvdbOptions.setVisibility(metadataProvider == MovieMetadataSource.Provider.TVDB ? View.VISIBLE : View.GONE);
-        add(card, tvdbOptions, 0);
-        LinearLayout heading = horizontal();
-        heading.addView(text("TMDB 连接", 14, appearance.foreground, true), new LinearLayout.LayoutParams(0, -2, 1f));
-        apiState = text("", 12, appearance.muted, true);
-        heading.addView(apiState);
-        add(card, heading, 12);
-        LinearLayout input = horizontal();
-        credential = field("API Key 或 Read Access Token",
+        add(column, tvdbOptions, 0);
+        credential = field("API Key 或 Token",
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        credential.setContentDescription("TMDB API Key 或 Read Access Token");
+        credential.setTextSize(15);
         credential.setSingleLine(true);
         credential.setTransformationMethod(PasswordTransformationMethod.getInstance());
         credential.setSaveEnabled(false);
@@ -784,31 +826,25 @@ public final class MainActivity extends Activity {
                 saveCredential();
             }
         });
-        input.addView(credential, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        showCredential = button("显示", appearance.tint, appearance.accent);
-        showCredential.setMinHeight(dp(48));
-        showCredential.setMinimumWidth(dp(58));
-        showCredential.setOnClickListener(view -> {
+        addSettingsRow(column, "TMDB 凭据", null, credential, dp(170));
+        showCredential = settingsButton("显示", "显示 TMDB 凭据", () -> {
             boolean concealed = credential.getTransformationMethod() instanceof PasswordTransformationMethod;
             credential.setTransformationMethod(concealed ? null : PasswordTransformationMethod.getInstance());
             credential.setSelection(credential.length());
             showCredential.setText(concealed ? "隐藏" : "显示");
+            showCredential.setContentDescription(concealed ? "隐藏 TMDB 凭据" : "显示 TMDB 凭据");
         });
-        LinearLayout.LayoutParams showPlacement = new LinearLayout.LayoutParams(-2, -2);
-        showPlacement.leftMargin = dp(7);
-        input.addView(showCredential, showPlacement);
-        add(card, input, 11);
-        validate = button("测试 TMDB 连接", appearance.tint, appearance.accent);
-        validate.setOnClickListener(view -> validateApi());
-        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(-2, dp(44));
-        placement.topMargin = dp(10);
-        card.addView(validate, placement);
+        addSettingsRow(column, "凭据可见性", showCredential);
+        apiState = text("", 12, appearance.muted, false);
+        validate = settingsButton("测试", "测试 TMDB 连接", this::validateApi);
+        addSettingsRow(column, "TMDB 连接", apiState, validate, ViewGroup.LayoutParams.WRAP_CONTENT);
         diagnosticReport = text("", 13, appearance.foreground, false);
         diagnosticReport.setTextIsSelectable(true);
         diagnosticReport.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         diagnosticReport.setLineSpacing(dp(3), 1f);
+        diagnosticReport.setPaddingRelative(0, dp(8), 0, dp(8));
         diagnosticReport.setVisibility(View.GONE);
-        add(card, diagnosticReport, 8);
+        add(column, diagnosticReport, 0);
     }
 
     private void selectMetadataSource() {
@@ -866,45 +902,38 @@ public final class MainActivity extends Activity {
         TvdbClient client = new TvdbClient(savedTvdbKey, savedTvdbPin, language());
         begin(client, "正在检测 TheTVDB 连接…", () -> {
             client.validate();
-            return () -> finishWithLog("TheTVDB API 已连通，凭据有效。");
+            return () -> finishWithLog("TheTVDB API 已连通，凭据有效。", ScrapeHistory.Tone.SUCCESS);
         });
     }
 
-    private void addSubtitleDirectory(LinearLayout panel) {
-        addSettingsHeading(panel, "电影目录");
-        subtitleFolder = text("", 13, appearance.muted, false);
-        add(panel, subtitleFolder, 5);
-        pickSubtitleFolder = button("设置搜索路径", appearance.tint, appearance.accent);
-        pickSubtitleFolder.setMinHeight(dp(48));
-        pickSubtitleFolder.setOnClickListener(view -> chooseFolder());
-        add(panel, pickSubtitleFolder, 8);
+    private void addSubtitleDirectory(LinearLayout column) {
+        subtitleFolder = text("", 12, appearance.muted, false);
+        subtitleFolder.setMaxLines(3);
+        subtitleFolder.setTextIsSelectable(true);
+        pickSubtitleFolder = settingsButton("授权", "设置字幕搜索路径", this::chooseFolder);
+        addSettingsRow(column, "搜索路径", subtitleFolder, pickSubtitleFolder, ViewGroup.LayoutParams.WRAP_CONTENT);
     }
 
-    private void addSubtitles(LinearLayout card) {
-        addSettingsHeading(card, "下载设置");
-        autoSubtitles = option("随一键刮削和手动匹配下载", settings.getBoolean("auto_subtitles", false));
-        add(card, autoSubtitles, 4);
-        skipExistingSubtitles = option("跳过已有外挂字幕的电影", settings.getBoolean("skip_existing_subtitles", true));
+    private void addSubtitles(LinearLayout column) {
+        autoSubtitles = settingsSwitch("随一键刮削和手动匹配下载字幕", settings.getBoolean("auto_subtitles", false));
+        addSettingsRow(column, "自动下载字幕", text("随一键刮削和手动匹配下载", 12, appearance.muted, false),
+                autoSubtitles, ViewGroup.LayoutParams.WRAP_CONTENT);
+        skipExistingSubtitles = settingsSwitch("跳过已有外挂字幕的电影",
+                settings.getBoolean("skip_existing_subtitles", true));
         skipExistingSubtitles.setOnCheckedChangeListener((view, enabled) ->
                 settings.edit().putBoolean("skip_existing_subtitles", enabled).apply());
-        add(card, skipExistingSubtitles, 0);
-        add(card, text("字幕保存到影片的 Subs 文件夹。", 13, appearance.muted, false), 2);
+        addSettingsRow(column, "跳过已有外挂字幕", skipExistingSubtitles);
+        add(column, text("字幕保存到影片的 Subs 文件夹。", 12, appearance.muted, false), 8);
     }
 
-    private void addSubtitleSources(LinearLayout card) {
-        addSettingsHeading(card, "字幕来源");
-        LinearLayout buttons = horizontal();
-        subtitleSettings = button("设置字幕来源", appearance.tint, appearance.accent);
-        subtitleSettings.setOnClickListener(view -> showSubtitleSettings());
-        subtitleSettings.setMinHeight(dp(48));
-        buttons.addView(subtitleSettings, new LinearLayout.LayoutParams(0, -2, 1f));
-        testAssrt = button("测试伪射手连接", appearance.tint, appearance.accent);
-        testAssrt.setMinHeight(dp(48));
-        testAssrt.setOnClickListener(view -> validateAssrt());
-        LinearLayout.LayoutParams placement = new LinearLayout.LayoutParams(0, -2, 1f);
-        placement.leftMargin = dp(8);
-        buttons.addView(testAssrt, placement);
-        add(card, buttons, 9);
+    private void addSubtitleSources(LinearLayout column) {
+        subtitleSettings = settingsButton("设置", "设置字幕来源", this::showSubtitleSettings);
+        addSettingsRow(column, "字幕来源", subtitleSettings);
+        testAssrt = settingsButton("测试", "测试伪射手连接", () -> {
+            setWorkbenchSettingsVisible(false);
+            validateAssrt();
+        });
+        addSettingsRow(column, "伪射手连接", testAssrt);
     }
 
     private void showSubtitleSettings() {
@@ -952,54 +981,118 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private void addOptions(LinearLayout card) {
-        addSettingsHeading(card, "刮削设置");
-        LinearLayout row = horizontal();
-        row.addView(text("资料语言", 14, appearance.foreground, false), new LinearLayout.LayoutParams(0, -2, 1f));
+    private void addOptions(LinearLayout column) {
         language = new Spinner(this, Spinner.MODE_DROPDOWN);
         language.setContentDescription("选择资料语言");
+        language.setMinimumHeight(dp(48));
         ArrayAdapter<String> choices = new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_item, LANGUAGE_NAMES);
+                android.R.layout.simple_spinner_item, LANGUAGE_NAMES) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTextSize(15);
+                view.setTextColor(appearance.foreground);
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                view.setTextSize(15);
+                view.setTextColor(appearance.foreground);
+                return view;
+            }
+        };
         choices.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         language.setAdapter(choices);
         language.setSelection(Math.min(LANGUAGES.length - 1, Math.max(0, settings.getInt("language", 0))));
-        row.addView(language, new LinearLayout.LayoutParams(dp(140), dp(44)));
-        add(card, row, 5);
-        preferFolder = option("优先按电影文件夹名匹配", settings.getBoolean("prefer_folder", true));
+        addSettingsRow(column, "资料语言", null, language, dp(140));
+        preferFolder = settingsSwitch("优先按电影文件夹名匹配", settings.getBoolean("prefer_folder", true));
         preferFolder.setOnCheckedChangeListener((button, checked) -> {
             movies = Collections.emptyList();
             needsReview.clear();
             updateUi();
         });
-        add(card, preferFolder, 0);
-        actors = option("下载本地演员头像（最多 " + ScrapeEngine.ACTOR_LIMIT + " 张）", settings.getBoolean("actors", true));
-        add(card, actors, 0);
-        alternateFanart = option("额外保存备用背景图（最多 " + ScrapeEngine.ALTERNATE_FANART_LIMIT + " 张）",
+        addSettingsRow(column, "优先按文件夹名匹配", preferFolder);
+        String actorLimit = "最多 " + ScrapeEngine.ACTOR_LIMIT + " 张";
+        actors = settingsSwitch("下载本地演员头像，" + actorLimit, settings.getBoolean("actors", true));
+        addSettingsRow(column, "本地演员头像", text(actorLimit, 12, appearance.muted, false), actors,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        String fanartLimit = "最多 " + ScrapeEngine.ALTERNATE_FANART_LIMIT + " 张";
+        alternateFanart = settingsSwitch("额外保存备用背景图，" + fanartLimit,
                 settings.getBoolean("alternate_fanart", false));
-        add(card, alternateFanart, 0);
-        overwrite = option("更新待刮削影片的已有资料", settings.getBoolean("overwrite", false));
-        add(card, overwrite, 0);
-        add(card, text("更新时保留 NFO 中的观看记录、续播点和个人评分。", 12, appearance.muted, false), 2);
-        manual = button("手动匹配影片", appearance.tint, appearance.accent);
-        manual.setMinHeight(dp(48));
-        manual.setOnClickListener(view -> openManual());
-        add(card, manual, 10);
+        addSettingsRow(column, "备用背景图", text(fanartLimit, 12, appearance.muted, false), alternateFanart,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        overwrite = settingsSwitch("更新待刮削影片的已有资料，保留观看记录、续播点和个人评分",
+                settings.getBoolean("overwrite", false));
+        TextView preserveNote = text("保留观看记录、续播点和个人评分。", 12, appearance.muted, false);
+        addSettingsRow(column, "更新已有资料", preserveNote, overwrite, ViewGroup.LayoutParams.WRAP_CONTENT);
+        manual = settingsButton("选择", "手动匹配影片", () -> {
+            setWorkbenchSettingsVisible(false);
+            openManual();
+        });
+        addSettingsRow(column, "手动匹配影片", manual);
 
-        add(card, text("Kodi 合集资料目录", 14, appearance.foreground, true), 12);
-        collectionFolderName = text("", 13, appearance.muted, false);
+        collectionFolderName = text("", 12, appearance.muted, false);
         collectionFolderName.setMaxLines(3);
         collectionFolderName.setTextIsSelectable(true);
-        add(card, collectionFolderName, 4);
-        LinearLayout folderButtons = horizontal();
-        pickCollectionFolder = button("选择合集目录", appearance.tint, appearance.accent);
-        pickCollectionFolder.setOnClickListener(view -> chooseDirectory(PICK_COLLECTION_FOLDER, collectionFolder));
-        folderButtons.addView(pickCollectionFolder, new LinearLayout.LayoutParams(-2, dp(42)));
-        clearCollectionFolder = button("取消选择", appearance.tint, appearance.accent);
-        clearCollectionFolder.setOnClickListener(view -> clearCollectionFolder());
-        LinearLayout.LayoutParams clearPlacement = new LinearLayout.LayoutParams(-2, dp(42));
-        clearPlacement.leftMargin = dp(8);
-        folderButtons.addView(clearCollectionFolder, clearPlacement);
-        add(card, folderButtons, 8);
+        pickCollectionFolder = settingsButton("授权", "选择 Kodi 合集资料目录",
+                () -> chooseDirectory(PICK_COLLECTION_FOLDER, collectionFolder));
+        addSettingsRow(column, "Kodi 合集目录", collectionFolderName, pickCollectionFolder,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        collectionClearRow = vertical();
+        clearCollectionFolder = settingsButton("取消", "取消选择 Kodi 合集资料目录", this::clearCollectionFolder);
+        addSettingsRow(collectionClearRow, "取消合集目录授权", clearCollectionFolder);
+        add(column, collectionClearRow, 0);
+    }
+
+    private Button settingsButton(String label, String description, Runnable action) {
+        Button control = button(label, appearance.tint, appearance.accent);
+        control.setContentDescription(description);
+        control.setTextSize(15);
+        control.setMinHeight(dp(48));
+        control.setMinWidth(dp(56));
+        control.setOnClickListener(view -> action.run());
+        return control;
+    }
+
+    private Switch settingsSwitch(String description, boolean enabled) {
+        Switch control = option("", enabled);
+        control.setContentDescription(description);
+        control.setTextSize(15);
+        control.setMinWidth(dp(48));
+        control.setMinHeight(dp(48));
+        return control;
+    }
+
+    private void addSettingsRow(LinearLayout column, String label, View control) {
+        addSettingsRow(column, label, null, control, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private void addSettingsRow(LinearLayout column, String label, TextView detail, View control, int controlWidth) {
+        LinearLayout row = horizontal();
+        row.setBaselineAligned(false);
+        row.setMinimumHeight(dp(56));
+        row.setPaddingRelative(0, dp(4), 0, dp(4));
+        if (control.getId() == View.NO_ID) control.setId(View.generateViewId());
+        TextView title = text(label, 15, appearance.foreground, false);
+        title.setLabelFor(control.getId());
+        LinearLayout.LayoutParams labelSpace = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        labelSpace.setMarginEnd(dp(12));
+        if (detail == null) {
+            row.addView(title, labelSpace);
+        } else {
+            LinearLayout labels = vertical();
+            add(labels, title, 0);
+            add(labels, detail, 2);
+            row.addView(labels, labelSpace);
+        }
+        row.addView(control, new LinearLayout.LayoutParams(controlWidth, ViewGroup.LayoutParams.WRAP_CONTENT));
+        add(column, row, 0);
+        View divider = new View(this);
+        divider.setBackgroundColor(appearance.border);
+        divider.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        column.addView(divider, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
     }
 
     private void addScraperActions() {
@@ -1013,7 +1106,18 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams primarySpace = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
         primarySpace.setMarginStart(dp(8));
         row.addView(start, primarySpace);
+        addSettingsButton(row, "刮削设置");
         addFooter(scraperPage, row);
+    }
+
+    private void addSettingsButton(LinearLayout actions, String description) {
+        Button gear = iconButton(UiIcon.Kind.SETTINGS, description);
+        gear.setMinHeight(dp(52));
+        gear.setPaddingRelative(dp(14), 0, dp(14), 0);
+        gear.setOnClickListener(view -> setWorkbenchSettingsVisible(true));
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(dp(52), ViewGroup.LayoutParams.MATCH_PARENT);
+        size.setMarginStart(dp(8));
+        actions.addView(gear, size);
     }
 
     private Button primaryAction(String label, Runnable launch) {
@@ -1027,74 +1131,40 @@ public final class MainActivity extends Activity {
     }
 
     private void addFooter(LinearLayout page, View actions) {
+        View divider = new View(this);
+        divider.setBackgroundColor(appearance.border);
+        page.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
         LinearLayout.LayoutParams actionSpace = new LinearLayout.LayoutParams(-1, -2);
-        actionSpace.setMargins(dp(16), dp(6), dp(16), dp(12));
+        actionSpace.setMargins(dp(16), dp(10), dp(16), dp(12));
         page.addView(actions, actionSpace);
     }
 
-    private record RunPanel(ScrapeHistory history, TextView state, ProgressBar progress, ScrollView viewer, TextView entries) {}
+    private record RunPanel(ScrapeHistory history, TextView state, ProgressBar progress, TextView entries) {}
 
     private RunPanel addLog(LinearLayout column, String title, ScrapeHistory history) {
-        LinearLayout card = card(column);
-        LinearLayout header = horizontal();
-        header.addView(settingsHeading(title), new LinearLayout.LayoutParams(0, -2, 1));
-        Button previous = button("历史日志", appearance.tint, appearance.accent);
-        previous.setMinHeight(dp(48));
-        previous.setOnClickListener(view -> showHistory(history));
-        header.addView(previous);
-        add(card, header, 0);
-        TextView runState = text("等待开始", 14, appearance.muted, true);
+        TextView heading = text(title, 15, appearance.foreground, true);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        add(column, heading, 0);
+        TextView runState = text("等待开始", 13, appearance.muted, true);
+        runState.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         runState.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        add(card, runState, 7);
+        add(column, runState, 7);
         ProgressBar progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setProgressTintList(ColorStateList.valueOf(appearance.accent));
         progress.setIndeterminateTintList(ColorStateList.valueOf(appearance.accent));
         progress.setMax(100);
         LinearLayout.LayoutParams bar = new LinearLayout.LayoutParams(-1, dp(8));
         bar.topMargin = dp(6);
-        card.addView(progress, bar);
+        column.addView(progress, bar);
         progress.setVisibility(View.GONE);
-        TextView log = text("", 15, appearance.foreground, false);
+        TextView log = text("", 13, appearance.foreground, false);
+        log.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         log.setTextIsSelectable(true);
         log.setHorizontallyScrolling(false);
         log.setLineSpacing(dp(3), 1f);
-        ScrollView viewer = new ScrollView(this) {
-            @Override protected void onMeasure(int widthSpec, int heightSpec) {
-                int limit = dp(144);
-                if (MeasureSpec.getMode(heightSpec) == MeasureSpec.UNSPECIFIED
-                        || MeasureSpec.getSize(heightSpec) > limit) {
-                    heightSpec = MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST);
-                }
-                super.onMeasure(widthSpec, heightSpec);
-            }
-        };
-        viewer.setNestedScrollingEnabled(true);
-        viewer.setOverScrollMode(View.OVER_SCROLL_NEVER);
-        viewer.addView(log, new ScrollView.LayoutParams(-1, -2));
-        viewer.setVisibility(View.GONE);
-        add(card, viewer, 7);
-        return new RunPanel(history, runState, progress, viewer, log);
-    }
-
-    private void showHistory(ScrapeHistory history) {
-        List<ScrapeHistory.Entry> entries = history.newestFirst();
-        AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("历史日志")
-                .setPositiveButton("关闭", null);
-        if (entries.isEmpty()) {
-            dialog.setMessage("暂无日志");
-        } else {
-            ScrollView historyScroll = new ScrollView(this);
-            LinearLayout content = dialogContent();
-            TextView lines = text("", 15, appearance.foreground, false);
-            lines.setText(ScrapeLogText.render(entries, true, dp(14)));
-            lines.setLineSpacing(dp(4), 1f);
-            lines.setTextIsSelectable(true);
-            lines.setHorizontallyScrolling(false);
-            add(content, lines, 0);
-            historyScroll.addView(content, new ScrollView.LayoutParams(-1, -2));
-            dialog.setView(historyScroll);
-        }
-        dialog.show();
+        log.setVisibility(View.GONE);
+        add(column, log, 7);
+        return new RunPanel(history, runState, progress, log);
     }
 
     private void chooseFolder() {
@@ -1109,7 +1179,8 @@ public final class MainActivity extends Activity {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             MovieOrganizer.Plan plan = MovieOrganizer.preview(storage, byFolder);
             return () -> {
-                currentRunPanel().state().setText(plan.items().isEmpty() ? "没有可重命名的影片" : "重命名方案待确认");
+                setRunState(plan.items().isEmpty() ? "没有可重命名的影片" : "重命名方案待确认",
+                        ScrapeHistory.Tone.NEUTRAL);
                 showScraperDialog(() -> showOrganizationPreview(selected, plan));
             };
         });
@@ -1154,8 +1225,8 @@ public final class MainActivity extends Activity {
         preview.addView(content, new ScrollView.LayoutParams(-1, -2));
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("重命名预览").setView(preview);
         if (hasChanges) {
-            dialog.setNegativeButton("取消", (view, which) -> currentRunPanel().state().setText("已取消重命名"));
-            dialog.setOnCancelListener(view -> currentRunPanel().state().setText("已取消重命名"));
+            dialog.setNegativeButton("取消", (view, which) -> setRunState("已取消重命名", ScrapeHistory.Tone.NEUTRAL));
+            dialog.setOnCancelListener(view -> setRunState("已取消重命名", ScrapeHistory.Tone.NEUTRAL));
             dialog.setPositiveButton("确认重命名", (view, which) -> applyMovieOrganization(selected, plan));
         } else {
             dialog.setNegativeButton("关闭", null);
@@ -1175,9 +1246,13 @@ public final class MainActivity extends Activity {
             MovieStorage storage = new MovieStorage(getApplicationContext(), selected);
             MovieOrganizer.Summary result = MovieOrganizer.apply(storage, plan, progress -> {
                 MovieOrganizer.Item item = progress.item();
-                post(() -> noteMovie(item.sourceVideo(), pathName(item.targetFolder()), progress.summary(), progress.detail()));
+                boolean organized = "已整理".equals(progress.summary());
+                String message = organized ? progress.summary() : progress.detail();
+                post(() -> noteMovie(item.sourceVideo(), pathName(item.targetFolder()), message,
+                        organized ? ScrapeHistory.Tone.SUCCESS : ScrapeHistory.Tone.FAILURE));
             });
-            return () -> finishWithLog("重命名完成 · 已整理 " + result.renamed() + " 部 · 失败 " + result.failed() + " 部");
+            return () -> finishWithLog("重命名完成 · 已整理 " + result.renamed() + " 部 · 失败 " + result.failed() + " 部",
+                    outcomeTone(result.renamed(), result.failed()));
         });
     }
 
@@ -1275,17 +1350,18 @@ public final class MainActivity extends Activity {
 
     private void updateFolderLabel() {
         folderName.setText(folder == null ? "内部存储 / Movies（等待授权）" : directoryName(folder));
-        pickFolder.setText(folder == null ? "设置搜索路径" : "更改搜索路径");
+        pickFolder.setText(folder == null ? "授权" : "更改");
+        pickFolder.setContentDescription(folder == null ? "授权电影目录" : "更改电影目录");
         subtitleFolder.setText(folderName.getText());
         pickSubtitleFolder.setText(pickFolder.getText());
+        pickSubtitleFolder.setContentDescription(pickFolder.getContentDescription());
     }
 
     private void updateCollectionFolderLabel() {
-        collectionFolderName.setText(collectionFolder == null
-                ? "可选。选择与 Kodi 相同的目录以补齐合集海报和背景图。"
-                : directoryName(collectionFolder));
-        pickCollectionFolder.setText(collectionFolder == null ? "选择合集目录" : "更改合集目录");
-        clearCollectionFolder.setVisibility(collectionFolder == null ? View.GONE : View.VISIBLE);
+        collectionFolderName.setText(collectionFolder == null ? "可选" : directoryName(collectionFolder));
+        pickCollectionFolder.setText(collectionFolder == null ? "选择" : "更改");
+        pickCollectionFolder.setContentDescription(collectionFolder == null ? "选择合集目录" : "更改合集目录");
+        collectionClearRow.setVisibility(collectionFolder == null ? View.GONE : View.VISIBLE);
     }
 
     private void validateApi() {
@@ -1304,8 +1380,9 @@ public final class MainActivity extends Activity {
                         + "\n\n凭据校验\n" + probeText(result.credentials, false));
                 String summary = "TMDB API" + (apiReachable ? "已连通" : "未确认连通") + "，图片服务器"
                         + (imagesReachable ? "已连通。" : "未确认连通。");
-                currentRunPanel().state().setText("TMDB 连接检测完成");
-                note(summary);
+                setRunState("TMDB 连接检测完成", ScrapeHistory.Tone.NEUTRAL);
+                int reachableServices = (apiReachable ? 1 : 0) + (imagesReachable ? 1 : 0);
+                note(summary, outcomeTone(reachableServices, 2 - reachableServices));
                 updateUi();
             };
         });
@@ -1316,8 +1393,9 @@ public final class MainActivity extends Activity {
         begin(null, "正在检测伪射手连接…", () -> {
             AssrtSubtitleSource.Diagnostic diagnostic = source.diagnoseRoutes();
             return () -> {
-                currentRunPanel().state().setText(diagnostic.reachable() ? "伪射手 API 已响应" : "未收到可识别的伪射手 API 响应");
-                note(diagnostic.report());
+                ScrapeHistory.Tone tone = diagnostic.reachable() ? ScrapeHistory.Tone.SUCCESS : ScrapeHistory.Tone.FAILURE;
+                setRunState(diagnostic.reachable() ? "伪射手 API 已响应" : "未收到可识别的伪射手 API 响应", tone);
+                note(diagnostic.report(), tone);
             };
         });
     }
@@ -1396,7 +1474,7 @@ public final class MainActivity extends Activity {
             post(() -> {
                 note("本地检查完成 · 资料齐全 " + complete.size() + " 部 · 待刮削 " + pending.size() + " 部");
                 if (!stopped && !pending.isEmpty()) {
-                    currentRunPanel().state().setText("正在连接 " + client.provider().label + "…");
+                    setRunState("正在连接 " + client.provider().label + "…", ScrapeHistory.Tone.NEUTRAL);
                     currentRunPanel().progress().setIndeterminate(true);
                 }
             });
@@ -1418,7 +1496,8 @@ public final class MainActivity extends Activity {
             }
             String summary = batch.summary(pending.size(), pending.size())
                     + (subtitles == null ? "" : "\n" + subtitleBatch.summary());
-            return () -> finishWithLog(summary);
+            return () -> finishWithLog(summary,
+                    outcomeTone(batch.written + subtitleBatch.written, batch.failed + subtitleBatch.failed));
         });
     }
 
@@ -1508,14 +1587,14 @@ public final class MainActivity extends Activity {
                                             Batch batch) throws IOException {
         try {
             ScrapeEngine.Outcome scraped = engine.scrape(movie, 0,
-                    message -> post(() -> noteMovie(movie, "", message)),
+                    message -> reportMetadataDetail(movie, message),
                     work == null ? query -> {} : work::matched);
             batch.count(scraped.result);
             DebugLog.event("metadata", "item=" + batch.started + " outcome=" + scraped.result.name());
             post(() -> {
                 if (scraped.result == ScrapeEngine.Result.REVIEW) needsReview.add(movie.relativePath);
                 String status = "资料 · " + resultLabel(scraped.result);
-                noteMovie(movie, status, status);
+                noteMovie(movie, status, metadataTone(scraped.result));
             });
             return scraped.subtitleQuery;
         } catch (IOException problem) {
@@ -1527,11 +1606,11 @@ public final class MainActivity extends Activity {
                 batch.count(ScrapeEngine.Result.REVIEW);
                 post(() -> {
                     needsReview.add(movie.relativePath);
-                    noteMovie(movie, "资料 · 待确认", "未找到资料，请手动匹配");
+                    noteMovie(movie, "资料 · 未匹配，请手动确认", ScrapeHistory.Tone.NEUTRAL);
                 });
             } else {
                 batch.failed++;
-                post(() -> noteMovie(movie, "资料 · 刮削失败", "资料 · 刮削失败 · " + errorText(problem)));
+                post(() -> noteMovie(movie, "资料 · 刮削失败 · " + errorText(problem), ScrapeHistory.Tone.FAILURE));
             }
             return null;
         }
@@ -1564,7 +1643,7 @@ public final class MainActivity extends Activity {
             List<MovieStorage.Movie> pending = pendingSubtitles(storage, scanned, skipSubtitles, batch, true);
             downloadPendingSubtitles(storage, pending, subtitles, batch, false);
             String summary = batch.summary();
-            return () -> finishWithLog(summary);
+            return () -> finishWithLog(summary, outcomeTone(batch.written, batch.failed));
         });
     }
 
@@ -1588,7 +1667,7 @@ public final class MainActivity extends Activity {
                 ScrapeEngine.checkCancelled();
                 batch.failed++;
                 DebugLog.failure("subtitle-preflight", failure);
-                post(() -> noteMovie(movie, "字幕 · 检查失败", "无法检查本地字幕 · " + errorText(failure)));
+                post(() -> noteMovie(movie, "字幕 · 检查失败 · " + errorText(failure), ScrapeHistory.Tone.FAILURE));
             }
         }
         int skipped = batch.skipped;
@@ -1609,7 +1688,7 @@ public final class MainActivity extends Activity {
             int position = index + 1;
             post(() -> {
                 setProgress(position, pending.size(), "字幕 · " + movie.title);
-                if (metadataComplete) noteMovie(movie, "资料 · 齐全", "已跳过刮削，本地资料齐全");
+                if (metadataComplete) noteMovie(movie, "资料 · 齐全", ScrapeHistory.Tone.NEUTRAL);
             });
             SubtitleQuery query = ScrapeEngine.subtitleQuery(storage, movie);
             recordSubtitles(movie, batch, () -> scraper.download(query));
@@ -1629,34 +1708,31 @@ public final class MainActivity extends Activity {
                     + " provider_failures=" + result.providerFailures.size() + " write_error=" + (result.writeFailure != null));
             batch.written += result.written;
             batch.duplicates += result.duplicates;
-            List<String> parts = new ArrayList<>();
-            if (!result.source.isEmpty()) parts.add(result.source);
-            if (result.written > 0) {
-                parts.add("保存 " + result.written + " 个");
-            }
-            if (result.duplicates > 0) parts.add("已有 " + result.duplicates + " 个");
+            String prefix = "字幕 · " + (result.source.isEmpty() ? "" : result.source + " · ");
             if (result.writeFailure != null) {
                 ScrapeEngine.checkCancelled();
                 batch.failed++;
-                parts.add("保存失败");
             } else if (!result.found()) {
                 batch.missing++;
-                parts.add("未找到中文字幕");
             }
-            String summary = "字幕 · " + String.join(" · ", parts);
-            List<String> detail = new ArrayList<>();
-            detail.add(summary);
-            detail.addAll(result.writtenFiles);
-            for (SubtitleScraper.ProviderFailure failure : result.providerFailures) {
-                detail.add("来源失败 · " + failure.source() + " · " + failure.message());
-            }
-            if (result.writeFailure != null) detail.add("保存失败 · " + errorText(result.writeFailure));
-            post(() -> noteMovie(movie, summary, String.join("\n", detail)));
+            post(() -> {
+                if (result.written > 0) {
+                    noteMovie(movie, prefix + "保存 " + result.written + " 个", ScrapeHistory.Tone.SUCCESS);
+                }
+                if (result.duplicates > 0) {
+                    noteMovie(movie, prefix + "已有 " + result.duplicates + " 个", ScrapeHistory.Tone.NEUTRAL);
+                }
+                if (result.writeFailure != null) {
+                    noteMovie(movie, prefix + "保存失败 · " + errorText(result.writeFailure), ScrapeHistory.Tone.FAILURE);
+                } else if (!result.found()) {
+                    noteMovie(movie, prefix + "未找到中文字幕", ScrapeHistory.Tone.NEUTRAL);
+                }
+            });
         } catch (IOException problem) {
             ScrapeEngine.checkCancelled();
             batch.failed++;
             DebugLog.failure("subtitle", problem);
-            post(() -> noteMovie(movie, "字幕 · 下载失败", "字幕 · 下载失败 · " + errorText(problem)));
+            post(() -> noteMovie(movie, "字幕 · 下载失败 · " + errorText(problem), ScrapeHistory.Tone.FAILURE));
         }
     }
 
@@ -1675,9 +1751,9 @@ public final class MainActivity extends Activity {
             return () -> {
                 movies = scanned;
                 if (movies.isEmpty()) {
-                    currentRunPanel().state().setText("没有发现可匹配的电影文件");
+                    setRunState("没有发现可匹配的电影文件", ScrapeHistory.Tone.NEUTRAL);
                 } else {
-                    currentRunPanel().state().setText("已发现 " + movies.size() + " 部影片");
+                    setRunState("已发现 " + movies.size() + " 部影片", ScrapeHistory.Tone.NEUTRAL);
                     showScraperDialog(this::showMovieList);
                 }
             };
@@ -1800,7 +1876,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showCandidates(MovieStorage.Movie movie, String query, int year, List<TmdbClient.Candidate> matches) {
-        currentRunPanel().state().setText(matches.isEmpty() ? "未找到匹配的影片" : "找到 " + matches.size() + " 个候选");
+        setRunState(matches.isEmpty() ? "未找到匹配的影片" : "找到 " + matches.size() + " 个候选",
+                ScrapeHistory.Tone.NEUTRAL);
         AlertDialog.Builder dialog = new AlertDialog.Builder(this).setTitle("选择匹配结果")
                 .setNegativeButton("取消", null)
                 .setNeutralButton("修改搜索", (d, which) -> showQuery(movie, query, year));
@@ -1827,7 +1904,7 @@ public final class MainActivity extends Activity {
     }
 
     private void confirmManual(MovieStorage.Movie movie, int id, String label, String overview) {
-        currentRunPanel().state().setText("待确认匹配");
+        setRunState("待确认匹配", ScrapeHistory.Tone.NEUTRAL);
         String shortened = overview == null || overview.isEmpty() ? ""
                 : "\n\n" + (overview.length() <= 270 ? overview : overview.substring(0, 270) + "…");
         String message = label + shortened + "\n\n将更新所选影片的资料和图片，并保留旧 NFO 中的观看记录、续播点和个人评分。";
@@ -1864,13 +1941,13 @@ public final class MainActivity extends Activity {
             int tmdbId = client.provider() == MovieMetadataSource.Provider.TMDB ? id : 0;
             boolean needsSubtitles = subtitles != null
                     && !pendingSubtitles(storage, Collections.singletonList(movie), skipSubtitles, batch, false).isEmpty();
-            if (batch.skipped > 0) post(() -> noteMovie(movie, "字幕 · 已有", "已有本地字幕，已跳过下载"));
+            if (batch.skipped > 0) post(() -> noteMovie(movie, "字幕 · 已有", ScrapeHistory.Tone.NEUTRAL));
             try (SubtitleWork work = startSubtitles(needsSubtitles ? subtitles : null, storage, movie, tmdbId)) {
-                ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> post(() -> noteMovie(movie, "", message)),
+                ScrapeEngine.Outcome scraped = engine.scrape(movie, id, message -> reportMetadataDetail(movie, message),
                         work == null ? query -> {} : work::matched);
                 result = scraped.result;
                 String status = "资料 · " + resultLabel(result);
-                post(() -> noteMovie(movie, status, status));
+                post(() -> noteMovie(movie, status, metadataTone(result)));
                 if (work != null) {
                     work.matched(scraped.subtitleQuery);
                     recordSubtitles(movie, batch, work::result);
@@ -1879,10 +1956,7 @@ public final class MainActivity extends Activity {
             return () -> {
                 needsReview.remove(movie.relativePath);
                 if (client.provider() == MovieMetadataSource.Provider.TMDB) apiVerified = true;
-                currentRunPanel().state().setText(resultLabel(result));
-                if (subtitles != null) {
-                    noteMovie(movie, "", batch.summary());
-                }
+                setRunState(resultLabel(result), metadataTone(result));
                 updateUi();
             };
         });
@@ -1922,9 +1996,13 @@ public final class MainActivity extends Activity {
     }
 
     private void focusTmdbCredential() {
-        credential.requestFocus();
-        scroll.post(() -> scroll.smoothScrollTo(0,
-                Math.max(0, ((View) credential.getParent().getParent()).getTop() - dp(14))));
+        setWorkbenchSettingsVisible(true);
+        credential.post(() -> {
+            if (!credential.isShown()) return;
+            credential.requestFocus();
+            credential.requestRectangleOnScreen(
+                    new android.graphics.Rect(0, 0, credential.getWidth(), credential.getHeight()), true);
+        });
     }
 
     private String language() {
@@ -2003,9 +2081,8 @@ public final class MainActivity extends Activity {
         activeClient = client;
         dismissKeyboard();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        currentRunPanel().state().setText(status);
-        String firstEntry = "[" + LocalDateTime.now().format(LOG_TIME) + "] " + status;
-        updateLog(taskPanel, taskPanel.history().append(redactLogText(firstEntry), true));
+        setRunState(status, ScrapeHistory.Tone.NEUTRAL);
+        updateLog(taskPanel, taskPanel.history().append(redactLogText(status), true, ScrapeHistory.Tone.NEUTRAL));
         currentRunPanel().progress().setVisibility(View.VISIBLE);
         currentRunPanel().progress().setIndeterminate(true);
         updateUi();
@@ -2042,7 +2119,7 @@ public final class MainActivity extends Activity {
                 updateUi();
                 try {
                     if (stopped) {
-                        currentRunPanel().state().setText("已停止");
+                        setRunState("已停止", ScrapeHistory.Tone.NEUTRAL);
                         if (diagnostic) {
                             diagnosticReport.setText("连接检测已停止");
                             note("连接检测已停止");
@@ -2050,15 +2127,15 @@ public final class MainActivity extends Activity {
                             note("任务已停止。已写入的资料可以继续使用。");
                         }
                     } else if (failure != null) {
-                        currentRunPanel().state().setText("操作失败");
+                        setRunState("操作失败", ScrapeHistory.Tone.FAILURE);
                         MovieTaskFailure film = failure instanceof MovieTaskFailure item ? item : null;
                         Exception reason = film == null ? failure : film.failure;
                         MovieStorage.Movie affectedMovie = film == null ? failureMovie : film.movie;
                         String message = errorText(reason);
                         if (affectedMovie == null) {
-                            note(message);
+                            note(message, ScrapeHistory.Tone.FAILURE);
                         } else {
-                            noteMovie(affectedMovie, "资料 · 刮削失败", "资料 · 刮削失败 · " + message);
+                            noteMovie(affectedMovie, "资料 · 刮削失败 · " + message, ScrapeHistory.Tone.FAILURE);
                         }
                         if (diagnostic) {
                             diagnosticReport.setText(redactLogText(message));
@@ -2081,7 +2158,7 @@ public final class MainActivity extends Activity {
     private void cancelWork() {
         stopped = true;
         DebugLog.event("task", "stop requested");
-        currentRunPanel().state().setText("正在停止…");
+        setRunState("正在停止…", ScrapeHistory.Tone.NEUTRAL);
         updateUi();
         Thread running = worker;
         if (running != null) {
@@ -2128,7 +2205,7 @@ public final class MainActivity extends Activity {
         currentRunPanel().progress().setIndeterminate(false);
         currentRunPanel().progress().setMax(total);
         currentRunPanel().progress().setProgress(index - 1);
-        currentRunPanel().state().setText(index + " / " + total + " · " + title);
+        setRunState(index + " / " + total + " · " + title, ScrapeHistory.Tone.NEUTRAL);
         DebugLog.event("progress", "position=" + index + " total=" + total);
     }
 
@@ -2157,7 +2234,7 @@ public final class MainActivity extends Activity {
         language.setEnabled(!busy);
         updatePrimaryAction(start, "一键刮削");
         updatePrimaryAction(subtitlesOnly, "一键下载字幕");
-        manual.setText(needsReview.isEmpty() ? "手动匹配影片" : "手动匹配 · " + needsReview.size());
+        manual.setText(needsReview.isEmpty() ? "选择" : "待确认 " + needsReview.size());
         manual.setContentDescription(needsReview.isEmpty() ? "手动匹配影片"
                 : "手动匹配影片 · " + needsReview.size() + " 部待确认");
         apiState.setText(apiVerified ? "连接正常" : credential.length() > 0 ? "已输入" : "未设置");
@@ -2174,21 +2251,30 @@ public final class MainActivity extends Activity {
     }
 
     private void note(String message) {
-        RunPanel panel = currentRunPanel();
-        updateLog(panel, panel.history().append(redactLogText(message), false));
+        note(message, ScrapeHistory.Tone.NEUTRAL);
     }
 
-    private void noteMovie(MovieStorage.Movie movie, String concise, String detail) {
+    private void note(String message, ScrapeHistory.Tone tone) {
+        RunPanel panel = currentRunPanel();
+        updateLog(panel, panel.history().append(redactLogText(message), false, tone));
+    }
+
+    private void noteMovie(MovieStorage.Movie movie, String message, ScrapeHistory.Tone tone) {
         String title = movie.title + (movie.year > 0 ? " (" + movie.year + ")" : "");
-        noteMovie(movie.relativePath, title, concise, detail);
+        noteMovie(movie.relativePath, title, message, tone);
     }
 
-    private void noteMovie(String moviePath, String movieTitle, String concise, String detail) {
+    private void noteMovie(String moviePath, String movieTitle, String message, ScrapeHistory.Tone tone) {
         RunPanel panel = currentRunPanel();
-        String visible = redactLogText(concise);
-        List<ScrapeHistory.Entry> updated = panel.history().appendMovie(redactLogText(moviePath),
-                redactLogText(movieTitle), visible, redactLogText(detail));
-        if (!visible.isEmpty()) updateLog(panel, updated);
+        updateLog(panel, panel.history().appendMovie(redactLogText(moviePath), redactLogText(movieTitle),
+                redactLogText(message), tone));
+    }
+
+    private void reportMetadataDetail(MovieStorage.Movie movie, String message) {
+        if (message.equals("正在合并 Kodi 本地资料")) return;
+        ScrapeHistory.Tone tone = message.startsWith("以下图片写入失败：")
+                ? ScrapeHistory.Tone.FAILURE : ScrapeHistory.Tone.NEUTRAL;
+        post(() -> noteMovie(movie, message, tone));
     }
 
     private String redactLogText(String message) {
@@ -2207,23 +2293,36 @@ public final class MainActivity extends Activity {
     }
 
     private void finishWithLog(String summary) {
-        currentRunPanel().state().setText(summary);
-        note(summary);
+        finishWithLog(summary, ScrapeHistory.Tone.NEUTRAL);
+    }
+
+    private void finishWithLog(String summary, ScrapeHistory.Tone tone) {
+        setRunState(summary, tone);
+        note(summary, tone);
+    }
+
+    private void setRunState(String message, ScrapeHistory.Tone tone) {
+        RunPanel panel = currentRunPanel();
+        panel.state().setTextColor(ScrapeLogText.color(tone, appearance.dark, appearance.muted));
+        panel.state().setText(redactLogText(message));
     }
 
     private void updateLog(RunPanel panel, List<ScrapeHistory.Entry> entries) {
-        boolean follow = !panel.viewer().canScrollVertically(1);
+        ScrollView viewport = panel == subtitleLog ? subtitleScroll : scroll;
+        boolean follow = panel == activeRunPanel && panel.entries().getVisibility() == View.VISIBLE
+                && viewport.isShown() && !viewport.canScrollVertically(1);
         if (!entries.isEmpty()) {
             ScrapeHistory.Entry latest = entries.get(0);
-            if (!latest.isMovie() && latest.concise().contentEquals(panel.state().getText())) {
+            if (!latest.isMovie() && latest.message().contentEquals(panel.state().getText())) {
+                panel.state().setTextColor(ScrapeLogText.color(latest.tone(), appearance.dark, appearance.muted));
                 entries = entries.subList(1, entries.size());
             }
         }
-        CharSequence rendered = ScrapeLogText.render(entries, false, dp(14));
+        CharSequence rendered = ScrapeLogText.render(entries, dp(14), appearance.dark);
         panel.entries().setText(rendered);
-        panel.viewer().setVisibility(rendered.length() == 0 ? View.GONE : View.VISIBLE);
+        panel.entries().setVisibility(rendered.length() == 0 ? View.GONE : View.VISIBLE);
         if (follow && rendered.length() > 0) {
-            panel.viewer().post(() -> panel.viewer().scrollTo(0, panel.entries().getHeight()));
+            viewport.post(() -> viewport.scrollTo(0, viewport.getChildAt(0).getHeight()));
         }
     }
 
@@ -2235,7 +2334,7 @@ public final class MainActivity extends Activity {
 
     private void showAbout() {
         LinearLayout info = dialogContent();
-        add(info, text("Kodi 电影刮削器 1.17.0", 19, appearance.foreground, true), 0);
+        add(info, text("Kodi 电影刮削器 1.18.0", 19, appearance.foreground, true), 0);
         add(info, text("在 Kodi 中将电影源的内容类型设为「电影」，资料来源选择「仅本地信息」。"
                 + "按一部电影一个文件夹整理的资料库可开启「电影位于与片名匹配的独立文件夹」。"
                 + "如需读取演员头像和更多图片类型，可以开启演员缩略图，并将影片图片级别设为「最大」或自定义。", 14, appearance.muted, false), 12);
@@ -2290,6 +2389,16 @@ public final class MainActivity extends Activity {
             case PRESERVED: return "已保留";
             default: return "待确认";
         }
+    }
+
+    private static ScrapeHistory.Tone metadataTone(ScrapeEngine.Result result) {
+        return result == ScrapeEngine.Result.WRITTEN ? ScrapeHistory.Tone.SUCCESS : ScrapeHistory.Tone.NEUTRAL;
+    }
+
+    private static ScrapeHistory.Tone outcomeTone(int succeeded, int failed) {
+        if (succeeded > 0 && failed == 0) return ScrapeHistory.Tone.SUCCESS;
+        if (failed > 0 && succeeded == 0) return ScrapeHistory.Tone.FAILURE;
+        return ScrapeHistory.Tone.NEUTRAL;
     }
 
     private static final class Batch {
@@ -2354,29 +2463,6 @@ public final class MainActivity extends Activity {
         return panel;
     }
 
-    private LinearLayout settingsSection(LinearLayout settingsCard, boolean separated) {
-        if (separated) {
-            View rule = new View(this);
-            rule.setBackgroundColor(appearance.border);
-            LinearLayout.LayoutParams margin = new LinearLayout.LayoutParams(-1, dp(1));
-            margin.setMargins(0, dp(17), 0, dp(16));
-            settingsCard.addView(rule, margin);
-        }
-        LinearLayout section = vertical();
-        add(settingsCard, section, 0);
-        return section;
-    }
-
-    private TextView settingsHeading(String label) {
-        TextView heading = text(label, 17, appearance.foreground, true);
-        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
-        return heading;
-    }
-
-    private void addSettingsHeading(LinearLayout section, String label) {
-        add(section, settingsHeading(label), 0);
-    }
-
     private LinearLayout dialogContent() {
         LinearLayout content = vertical();
         content.setPadding(dp(22), dp(12), dp(22), dp(5));
@@ -2411,7 +2497,7 @@ public final class MainActivity extends Activity {
         EditText input = new EditText(this);
         input.setTextColor(appearance.foreground);
         input.setHintTextColor(appearance.muted);
-        input.setTextSize(16);
+        input.setTextSize(15);
         input.setInputType(type);
         input.setHint(hint);
         StateListDrawable fieldBackground = new StateListDrawable();
@@ -2428,7 +2514,7 @@ public final class MainActivity extends Activity {
         Button button = new Button(this);
         button.setText(name);
         button.setAllCaps(false);
-        button.setTextSize(16);
+        button.setTextSize(15);
         button.setLetterSpacing(0);
         button.setMinWidth(0);
         button.setMinimumWidth(0);
@@ -2451,7 +2537,7 @@ public final class MainActivity extends Activity {
         Switch toggle = new Switch(this);
         toggle.setText(description);
         toggle.setTextColor(appearance.foreground);
-        toggle.setTextSize(16);
+        toggle.setTextSize(15);
         toggle.setMinHeight(dp(49));
         toggle.setSwitchPadding(dp(12));
         toggle.setChecked(value);
